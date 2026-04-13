@@ -66,7 +66,7 @@ function ExportTravelModal({ travelDetails, members, trip, onClose }) {
   function doExport() {
     if (!selected.size) return
     const detailsArr = Object.values(travelDetails)
-    downloadTravelICS(detailsArr, members, [...selected], trip.name)
+    downloadTravelICS(detailsArr, members, [...selected], trip.name, trip)
     setExported(true)
     setTimeout(onClose, 1200)
   }

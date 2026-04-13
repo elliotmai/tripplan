@@ -64,10 +64,39 @@ const TRANSPORT_ICONS = {
   ferry: '⛴️', subway: '🚇', taxi: '🚕', walk: '🚶', other: '🛸',
 }
 
+// ─── Trip banner event ────────────────────────────────────────────────────────
+
+function tripBannerLines(trip) {
+  if (!trip?.start_date || !trip?.end_date) return []
+  const [sy, sm, sd] = trip.start_date.split('-')
+  const [ey, em, ed] = trip.end_date.split('-')
+  const startVal = `${sy}${sm}${sd}`
+  const endVal   = nextDay(`${ey}${em}${ed}`)
+  const emoji    = trip.cover_emoji ? `${trip.cover_emoji} ` : '✈️ '
+  const desc     = [
+    trip.destination ? `Destination: ${trip.destination}` : null,
+    `${trip.start_date} – ${trip.end_date}`,
+  ].filter(Boolean).join('\\n')
+
+  return [
+    'BEGIN:VEVENT',
+    `UID:trip-${makeUID()}`,
+    `DTSTAMP:${isoToICS(new Date().toISOString())}Z`,
+    `SUMMARY:${escapeICS(`${emoji}${trip.name}`)}`,
+    `DTSTART;VALUE=DATE:${startVal}`,
+    `DTEND;VALUE=DATE:${endVal}`,
+    trip.destination ? `LOCATION:${escapeICS(trip.destination)}` : '',
+    `DESCRIPTION:${desc}`,
+    'END:VEVENT',
+  ].filter(Boolean)
+}
+
 // ─── Itinerary events → ICS ───────────────────────────────────────────────────
 
-export function generateICS(events, calName) {
+export function generateICS(events, calName, trip) {
   const lines = icsHeader(calName)
+
+  tripBannerLines(trip).forEach(l => lines.push(l))
 
   for (const event of events) {
     const start = toICSDate(event.date, event.time || null)
@@ -109,8 +138,10 @@ export function generateICS(events, calName) {
 // members:       array of { id, full_name }
 // selectedIds:   array of user_ids to include
 // tripName:      string
-export function generateTravelICS(travelDetails, members, selectedIds, tripName) {
+export function generateTravelICS(travelDetails, members, selectedIds, tripName, trip) {
   const lines = icsHeader(`${tripName} – Travel`)
+
+  tripBannerLines(trip).forEach(l => lines.push(l))
 
   const selected = travelDetails.filter(d => selectedIds.includes(d.user_id))
 
@@ -213,13 +244,13 @@ export function generateTravelICS(travelDetails, members, selectedIds, tripName)
 
 // ─── Download helpers ─────────────────────────────────────────────────────────
 
-export function downloadICS(events, calName) {
-  triggerDownload(generateICS(events, calName), calName)
+export function downloadICS(events, calName, trip) {
+  triggerDownload(generateICS(events, calName, trip), calName)
 }
 
-export function downloadTravelICS(travelDetails, members, selectedIds, tripName) {
+export function downloadTravelICS(travelDetails, members, selectedIds, tripName, trip) {
   triggerDownload(
-    generateTravelICS(travelDetails, members, selectedIds, tripName),
+    generateTravelICS(travelDetails, members, selectedIds, tripName, trip),
     `${tripName} – Travel`
   )
 }

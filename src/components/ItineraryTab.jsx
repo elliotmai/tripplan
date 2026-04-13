@@ -445,7 +445,7 @@ function ExportModal({ events, members, trip, scope, onClose }) {
     const label = scope === 'all'
       ? trip.name
       : `${trip.name} – ${format(new Date(scope + 'T12:00:00'), 'MMM d')}`
-    downloadICS(filtered, label)
+    downloadICS(filtered, label, trip)
     setExported(true)
     setTimeout(onClose, 1200)
   }

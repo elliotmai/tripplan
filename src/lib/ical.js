@@ -1,11 +1,9 @@
-// ─── ICS generator for Wander
-// Handles both itinerary events and traveler journey/accommodation details.
+// ─── ICS generator for Wander — with timezone support
+// Uses TZID= property for all datetime values so calendar apps
+// display events in the correct local time regardless of viewer timezone.
 
 function pad(n) { return String(n).padStart(2, '0') }
-
-function makeUID() {
-  return `${Date.now()}-${Math.random().toString(36).slice(2)}@wander`
-}
+function makeUID() { return `${Date.now()}-${Math.random().toString(36).slice(2)}@wander` }
 
 function escapeICS(str) {
   if (!str) return ''
@@ -16,230 +14,360 @@ function escapeICS(str) {
     .replace(/\n/g, '\\n')
 }
 
-// dateStr: 'yyyy-MM-dd', timeStr: 'HH:mm' (optional)
-function toICSDate(dateStr, timeStr) {
-  const [y, m, d] = dateStr.split('-')
-  if (!timeStr) return { value: `${y}${m}${d}`, allDay: true }
-  const [h, min] = timeStr.split(':')
-  return { value: `${y}${m}${d}T${pad(Number(h))}${pad(Number(min))}00`, allDay: false }
+// Current time as ICS UTC stamp — always UTC for DTSTAMP
+function nowUTC() {
+  const d   = new Date()
+  const y   = d.getUTCFullYear()
+  const mo  = pad(d.getUTCMonth() + 1)
+  const day = pad(d.getUTCDate())
+  const h   = pad(d.getUTCHours())
+  const min = pad(d.getUTCMinutes())
+  return `${y}${mo}${day}T${h}${min}00Z`
 }
 
-// ISO datetime string → ICS datetime, e.g. "2024-06-15T14:30:00" → "20240615T143000"
-function isoToICS(iso) {
-  if (!iso) return null
-  try {
-    const d = new Date(iso)
-    const y   = d.getFullYear()
-    const mo  = pad(d.getMonth() + 1)
-    const day = pad(d.getDate())
-    const h   = pad(d.getHours())
-    const min = pad(d.getMinutes())
-    return `${y}${mo}${day}T${h}${min}00`
-  } catch { return null }
+// Convert 'yyyy-MM-dd' + 'HH:mm' + IANA tzId → ICS DTSTART/DTEND value with TZID
+// Returns { prop, value } where prop is the full property name e.g. "DTSTART;TZID=Europe/London"
+// and value is e.g. "20240615T143000"
+function toTZDateTime(dateStr, timeStr, tzId) {
+  const [y, m, d] = dateStr.split('-')
+  const [h, min]  = (timeStr || '00:00').split(':')
+  const value     = `${y}${m}${d}T${pad(Number(h))}${pad(Number(min))}00`
+  const tz        = tzId || 'UTC'
+  return { prop: `DTSTART;TZID=${tz}`, dtendProp: `DTEND;TZID=${tz}`, value }
+}
+
+// Convert an all-day date string 'yyyy-MM-dd' → ICS DATE value
+function toDateValue(dateStr) {
+  const [y, m, d] = dateStr.split('-')
+  return `${y}${m}${d}`
 }
 
 // Increment a DATE string (yyyyMMdd) by 1 day
 function nextDay(icsDate) {
-  const y = parseInt(icsDate.slice(0, 4))
-  const m = parseInt(icsDate.slice(4, 6)) - 1
-  const d = parseInt(icsDate.slice(6, 8))
+  const y    = parseInt(icsDate.slice(0, 4))
+  const m    = parseInt(icsDate.slice(4, 6)) - 1
+  const d    = parseInt(icsDate.slice(6, 8))
   const next = new Date(y, m, d + 1)
   return `${next.getFullYear()}${pad(next.getMonth() + 1)}${pad(next.getDate())}`
 }
 
-const TRANSPORT_LABELS = {
-  flight:  'Flight',
-  train:   'Train',
-  bus:     'Bus',
-  car:     'Car',
-  ferry:   'Ferry',
-  subway:  'Subway',
-  taxi:    'Taxi',
-  walk:    'Walk',
-  other:   'Journey',
+// Convert an ISO datetime-local string + IANA tzId → ICS datetime with TZID
+// e.g. "2024-06-15T14:30" + "Asia/Tokyo" → { prop: "DTSTART;TZID=Asia/Tokyo", value: "20240615T143000" }
+function isoLocalToTZ(isoLocal, tzId) {
+  if (!isoLocal) return null
+  // datetime-local format: "2024-06-15T14:30" or "2024-06-15T14:30:00"
+  const clean = isoLocal.slice(0, 16) // "2024-06-15T14:30"
+  const [datePart, timePart] = clean.split('T')
+  const [y, mo, d] = datePart.split('-')
+  const [h, min]   = timePart.split(':')
+  const value      = `${y}${mo}${d}T${pad(Number(h))}${pad(Number(min))}00`
+  const tz         = tzId || 'UTC'
+  return {
+    startProp: `DTSTART;TZID=${tz}`,
+    endProp:   `DTEND;TZID=${tz}`,
+    value,
+    date:      datePart, // 'yyyy-MM-dd' for accommodation range calc
+  }
 }
 
-const TRANSPORT_ICONS = {
-  flight: '✈️', train: '🚂', bus: '🚌', car: '🚗',
-  ferry: '⛴️', subway: '🚇', taxi: '🚕', walk: '🚶', other: '🛸',
+function formatDTReadable(isoLocal, tzId) {
+  if (!isoLocal) return ''
+  try {
+    const date = new Date(isoLocal)
+    return date.toLocaleString('en-US', {
+      timeZone:        tzId || undefined,
+      month:           'short',
+      day:             'numeric',
+      year:            'numeric',
+      hour:            '2-digit',
+      minute:          '2-digit',
+      timeZoneName:    'short',
+    })
+  } catch { return isoLocal }
 }
 
-// ─── Trip banner event ────────────────────────────────────────────────────────
+function icsHeader(calName, timezone) {
+  const lines = [
+    'BEGIN:VCALENDAR',
+    'VERSION:2.0',
+    'PRODID:-//Wander//Trip Planner//EN',
+    'CALSCALE:GREGORIAN',
+    'METHOD:PUBLISH',
+    `X-WR-CALNAME:${escapeICS(calName)}`,
+  ]
+  if (timezone) lines.push(`X-WR-TIMEZONE:${timezone}`)
+  return lines
+}
+
+
+// ─── VTIMEZONE generator ──────────────────────────────────────────────────────
+// Required for Google Calendar to correctly interpret TZID= references.
+
+function _getOffsetMin(date, tzId) {
+  const utcStr   = date.toLocaleString('en-US', { timeZone: 'UTC', hour12: false, year:'numeric', month:'2-digit', day:'2-digit', hour:'2-digit', minute:'2-digit' })
+  const localStr = date.toLocaleString('en-US', { timeZone: tzId,  hour12: false, year:'numeric', month:'2-digit', day:'2-digit', hour:'2-digit', minute:'2-digit' })
+  const parse = s => { const [dt,tm]=s.split(', ');const [m,d,y]=dt.split('/');const [h,mn]=tm.split(':');return Date.UTC(+y,+m-1,+d,+h===24?0:+h,+mn) }
+  return (parse(localStr) - parse(utcStr)) / 60000
+}
+function _fmtTZOff(min) {
+  const sign=min>=0?'+':'-', abs=Math.abs(min)
+  return `${sign}${pad(Math.floor(abs/60))}${pad(abs%60)}`
+}
+function _tzAbbr(tzId, date) {
+  try { return new Intl.DateTimeFormat('en-US',{timeZone:tzId,timeZoneName:'short'}).formatToParts(date).find(p=>p.type==='timeZoneName')?.value||tzId.split('/').pop() }
+  catch { return tzId.split('/').pop() }
+}
+function _findTrans(year, tzId, fromStdToDst) {
+  let prev = null
+  for (let mo=0;mo<12;mo++) for (let dy=1;dy<=31;dy++) {
+    const d=new Date(Date.UTC(year,mo,dy,2,0));if(isNaN(d))continue
+    const off=_getOffsetMin(d,tzId)
+    if(prev!==null&&off!==prev&&fromStdToDst===(off>prev))return d
+    prev=off
+  }
+  return new Date(Date.UTC(year,3,1,2,0))
+}
+function _localDT(date, tzId) {
+  try {
+    const parts=new Intl.DateTimeFormat('en-CA',{timeZone:tzId,year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',second:'2-digit',hour12:false}).formatToParts(date)
+    const get=t=>parts.find(p=>p.type===t)?.value||'00'
+    return `${get('year')}${get('month')}${get('day')}T${get('hour')==='24'?'00':get('hour')}${get('minute')}${get('second')}`
+  } catch { return '19700101T020000' }
+}
+function makeVTimezone(tzId) {
+  if(!tzId||tzId==='UTC')return[]
+  try {
+    const jan=new Date(Date.UTC(2024,0,15)),jul=new Date(Date.UTC(2024,6,15))
+    const oJan=_getOffsetMin(jan,tzId),oJul=_getOffsetMin(jul,tzId)
+    const std=Math.min(oJan,oJul),dst=Math.max(oJan,oJul)
+    if(oJan===oJul)return['BEGIN:VTIMEZONE',`TZID:${tzId}`,'BEGIN:STANDARD','DTSTART:19700101T000000',`TZOFFSETFROM:${_fmtTZOff(std)}`,`TZOFFSETTO:${_fmtTZOff(std)}`,`TZNAME:${_tzAbbr(tzId,jan)}`,'END:STANDARD','END:VTIMEZONE']
+    const spring=_findTrans(2024,tzId,true),fall=_findTrans(2024,tzId,false)
+    return ['BEGIN:VTIMEZONE',`TZID:${tzId}`,'BEGIN:DAYLIGHT',`DTSTART:${_localDT(spring,tzId)}`,`TZOFFSETFROM:${_fmtTZOff(std)}`,`TZOFFSETTO:${_fmtTZOff(dst)}`,`TZNAME:${_tzAbbr(tzId,jul)}`,'RRULE:FREQ=YEARLY','END:DAYLIGHT','BEGIN:STANDARD',`DTSTART:${_localDT(fall,tzId)}`,`TZOFFSETFROM:${_fmtTZOff(dst)}`,`TZOFFSETTO:${_fmtTZOff(std)}`,`TZNAME:${_tzAbbr(tzId,jan)}`,'RRULE:FREQ=YEARLY','END:STANDARD','END:VTIMEZONE']
+  } catch { return [] }
+}
+function injectVTimezones(lines) {
+  const tzIds=new Set()
+  for(const line of lines){const m=line.match(/TZID=([^:]+):/);if(m&&m[1]!=='UTC')tzIds.add(m[1])}
+  if(!tzIds.size)return lines
+  const insertAt=lines.findIndex(l=>l==='BEGIN:VEVENT')
+  if(insertAt===-1)return lines
+  const vtBlocks=[]
+  for(const tzId of tzIds)makeVTimezone(tzId).forEach(l=>vtBlocks.push(l))
+  return [...lines.slice(0,insertAt),...vtBlocks,...lines.slice(insertAt)]
+}
+
+// ─── Trip banner (all-day, no timezone needed) ────────────────────────────────
 
 function tripBannerLines(trip) {
   if (!trip?.start_date || !trip?.end_date) return []
-  const [sy, sm, sd] = trip.start_date.split('-')
-  const [ey, em, ed] = trip.end_date.split('-')
-  const startVal = `${sy}${sm}${sd}`
-  const endVal   = nextDay(`${ey}${em}${ed}`)
+  const startVal = toDateValue(trip.start_date)
+  const endVal   = nextDay(toDateValue(trip.end_date))
   const emoji    = trip.cover_emoji ? `${trip.cover_emoji} ` : '✈️ '
   const desc     = [
     trip.destination ? `Destination: ${trip.destination}` : null,
     `${trip.start_date} – ${trip.end_date}`,
-  ].filter(Boolean).join('\\n')
+  ].filter(Boolean).join('\n')
 
   return [
     'BEGIN:VEVENT',
-    `UID:trip-${makeUID()}`,
-    `DTSTAMP:${isoToICS(new Date().toISOString())}Z`,
+    `UID:trip-banner-${trip.id || makeUID()}`,
+    `DTSTAMP:${nowUTC()}`,
     `SUMMARY:${escapeICS(`${emoji}${trip.name}`)}`,
     `DTSTART;VALUE=DATE:${startVal}`,
     `DTEND;VALUE=DATE:${endVal}`,
-    trip.destination ? `LOCATION:${escapeICS(trip.destination)}` : '',
-    `DESCRIPTION:${desc}`,
+    trip.destination ? `LOCATION:${escapeICS(trip.destination)}` : null,
+    `DESCRIPTION:${escapeICS(desc)}`,
     'END:VEVENT',
   ].filter(Boolean)
 }
 
-// ─── Itinerary events → ICS ───────────────────────────────────────────────────
+// ─── Itinerary event → VEVENT lines ──────────────────────────────────────────
+// event.time / event.end_time: 'HH:mm'
+// event.timezone: IANA string (e.g. 'Europe/London') — falls back to trip.timezone or UTC
 
-export function generateICS(events, calName, trip) {
-  const lines = icsHeader(calName)
+function eventLines(event, tripTimezone) {
+  const tz = event.timezone || tripTimezone || 'UTC'
 
-  tripBannerLines(trip).forEach(l => lines.push(l))
+  const lines = [
+    'BEGIN:VEVENT',
+    `UID:event-${event.id}`,
+    `DTSTAMP:${nowUTC()}`,
+    `SUMMARY:${escapeICS(event.title)}`,
+  ]
 
-  for (const event of events) {
-    const start = toICSDate(event.date, event.time || null)
-    const end   = toICSDate(event.date, event.end_time || event.time || null)
+  if (event.time) {
+    // Timed event
+    const { prop, dtendProp, value } = toTZDateTime(event.date, event.time, tz)
+    lines.push(`DTSTART;TZID=${tz}:${value}`)
 
-    lines.push('BEGIN:VEVENT')
-    lines.push(`UID:${makeUID()}`)
-    lines.push(`DTSTAMP:${isoToICS(new Date().toISOString())}Z`)
-    lines.push(`SUMMARY:${escapeICS(event.title)}`)
-
-    if (start.allDay) {
-      lines.push(`DTSTART;VALUE=DATE:${start.value}`)
-      lines.push(`DTEND;VALUE=DATE:${nextDay(start.value)}`)
+    if (event.end_time) {
+      const endVal = toTZDateTime(event.date, event.end_time, tz).value
+      lines.push(`DTEND;TZID=${tz}:${endVal}`)
     } else {
-      lines.push(`DTSTART:${start.value}`)
-      if (event.end_time) {
-        lines.push(`DTEND:${end.value}`)
-      } else {
-        // Default 1-hour duration
-        const [h, min] = event.time.split(':').map(Number)
-        const [y, m, d] = event.date.split('-')
-        lines.push(`DTEND:${y}${m}${d}T${pad(h + 1)}${pad(min)}00`)
-      }
+      // Default 1-hour duration
+      const [h, min] = event.time.split(':').map(Number)
+      const [y, m, d] = event.date.split('-')
+      lines.push(`DTEND;TZID=${tz}:${y}${m}${d}T${pad(h + 1)}${pad(min)}00`)
     }
-
-    if (event.location) lines.push(`LOCATION:${escapeICS(event.location)}`)
-    if (event.notes)    lines.push(`DESCRIPTION:${escapeICS(event.notes)}`)
-
-    lines.push('END:VEVENT')
+  } else {
+    // All-day event
+    const val = toDateValue(event.date)
+    lines.push(`DTSTART;VALUE=DATE:${val}`)
+    lines.push(`DTEND;VALUE=DATE:${nextDay(val)}`)
   }
 
-  lines.push('END:VCALENDAR')
-  return lines.join('\r\n')
+  if (event.location) lines.push(`LOCATION:${escapeICS(event.location)}`)
+  if (event.notes)    lines.push(`DESCRIPTION:${escapeICS(event.notes)}`)
+  lines.push('END:VEVENT')
+  return lines
 }
 
-// ─── Travel details → ICS ─────────────────────────────────────────────────────
+// ─── Travel leg → VEVENT lines ────────────────────────────────────────────────
+// leg.depart_at / leg.arrive_at: datetime-local string 'yyyy-MM-ddTHH:mm'
+// leg.depart_tz / leg.arrive_tz: IANA timezone strings
 
-// travelDetails: array of { user_id, legs, accommodation, accommodation_address, notes }
-// members:       array of { id, full_name }
-// selectedIds:   array of user_ids to include
-// tripName:      string
+const TRANSPORT_LABELS = { flight:'Flight', train:'Train', bus:'Bus', car:'Car', ferry:'Ferry', subway:'Subway', taxi:'Taxi', walk:'Walk', other:'Journey' }
+const TRANSPORT_ICONS  = { flight:'✈️', train:'🚂', bus:'🚌', car:'🚗', ferry:'⛴️', subway:'🚇', taxi:'🚕', walk:'🚶', other:'🛸' }
+
+function legLines(leg, legIdx, userId, memberName) {
+  const icon      = TRANSPORT_ICONS[leg.transport] || '🛸'
+  const label     = TRANSPORT_LABELS[leg.transport] || 'Journey'
+  const firstName = memberName.split(' ')[0]
+  const ref       = leg.number || label
+  const route     = [leg.from, leg.to].filter(Boolean).join(' → ')
+  const summary   = `${icon} ${ref} · ${firstName}${route ? ': ' + route : ''}`
+
+  const departTZ = leg.depart_tz || 'UTC'
+  const arriveTZ = leg.arrive_tz || leg.depart_tz || 'UTC'
+
+  const depDT = isoLocalToTZ(leg.depart_at, departTZ)
+  const arrDT = isoLocalToTZ(leg.arrive_at, arriveTZ)
+
+  if (!depDT) return []   // Can't make a calendar event without a start time
+
+  const descParts = [
+    `Traveler: ${memberName}`,
+    leg.notes     ? `Notes: ${leg.notes}` : null,
+  ].filter(Boolean)
+
+  return [
+    'BEGIN:VEVENT',
+    `UID:leg-${userId}-${legIdx}`,
+    `DTSTAMP:${nowUTC()}`,
+    `SUMMARY:${escapeICS(summary)}`,
+    `DTSTART;TZID=${departTZ}:${depDT.value}`,
+    arrDT
+      ? `DTEND;TZID=${arriveTZ}:${arrDT.value}`
+      : `DTEND;TZID=${departTZ}:${depDT.value}`,
+    leg.from ? `LOCATION:${escapeICS(leg.from)}` : null,
+    `DESCRIPTION:${escapeICS(descParts.join('\n'))}`,
+    'END:VEVENT',
+  ].filter(Boolean)
+}
+
+function accommodationLines(detail, userId, memberName) {
+  if (!detail.accommodation && !detail.accommodation_address) return []
+
+  const accomName    = detail.accommodation || 'Accommodation'
+  const accomAddress = detail.accommodation_address || ''
+  const firstName    = memberName.split(' ')[0]
+  const summary      = `🏨 ${accomName} · ${firstName}`
+
+  const legs     = detail.legs || []
+  // Use timezone-aware dates if available
+  const arrDates = legs
+    .map(l => isoLocalToTZ(l.arrive_at, l.arrive_tz || l.depart_tz)?.date)
+    .filter(Boolean).sort()
+  const depDates = legs
+    .map(l => isoLocalToTZ(l.depart_at, l.depart_tz)?.date)
+    .filter(Boolean).sort()
+
+  const checkIn  = arrDates[0] || null
+  const checkOut = depDates[depDates.length - 1] || null
+
+  if (!checkIn) return []
+
+  const startVal = toDateValue(checkIn)
+  const endVal   = (checkOut && checkOut !== checkIn)
+    ? toDateValue(checkOut)
+    : nextDay(startVal)
+
+  const desc = [
+    `Traveler: ${memberName}`,
+    detail.notes ? `Notes: ${detail.notes}` : null,
+  ].filter(Boolean).join('\n')
+
+  return [
+    'BEGIN:VEVENT',
+    `UID:accom-${userId}`,
+    `DTSTAMP:${nowUTC()}`,
+    `SUMMARY:${escapeICS(summary)}`,
+    `DTSTART;VALUE=DATE:${startVal}`,
+    `DTEND;VALUE=DATE:${endVal}`,
+    accomAddress ? `LOCATION:${escapeICS(accomAddress)}` : null,
+    `DESCRIPTION:${escapeICS(desc)}`,
+    'END:VEVENT',
+  ].filter(Boolean)
+}
+
+// ─── Public generate functions ────────────────────────────────────────────────
+
+export function generateICS(events, calName, trip) {
+  const lines = icsHeader(calName, trip?.timezone || null)
+  tripBannerLines(trip).forEach(l => lines.push(l))
+  const tz = trip?.timezone || 'UTC'
+  for (const event of events) {
+    eventLines(event, tz).forEach(l => lines.push(l))
+  }
+  lines.push('END:VCALENDAR')
+  return injectVTimezones(lines).join('\r\n')
+}
+
 export function generateTravelICS(travelDetails, members, selectedIds, tripName, trip) {
-  const lines = icsHeader(`${tripName} – Travel`)
-
+  const lines = icsHeader(`${tripName} – Travel`, trip?.timezone || null)
   tripBannerLines(trip).forEach(l => lines.push(l))
 
-  const selected = travelDetails.filter(d => selectedIds.includes(d.user_id))
+  const selected = Array.isArray(travelDetails)
+    ? travelDetails.filter(d => selectedIds.includes(d.user_id))
+    : Object.values(travelDetails).filter(d => selectedIds.includes(d.user_id))
 
   for (const detail of selected) {
-    const member   = members.find(m => m.id === detail.user_id)
-    const name     = member?.full_name || 'Traveler'
-    const firstName = name.split(' ')[0]
-
-    // ── Journey legs ──────────────────────────────────────────────────────────
-    for (const leg of (detail.legs || [])) {
-      const icon  = TRANSPORT_ICONS[leg.transport] || '🛸'
-      const label = TRANSPORT_LABELS[leg.transport] || 'Journey'
-
-      // Summary: "✈️ BA123 · Alice: LHR → NRT"  or  "✈️ Flight · Alice: London → Paris"
-      const ref    = leg.number ? `${leg.number}` : label
-      const route  = [leg.from, leg.to].filter(Boolean).join(' → ')
-      const summary = `${icon} ${ref} · ${firstName}${route ? ': ' + route : ''}`
-
-      // Description with full details
-      const descParts = [
-        `Traveler: ${name}`,
-        leg.number ? `${label} number: ${leg.number}` : null,
-        leg.from   ? `From: ${leg.from}` : null,
-        leg.to     ? `To: ${leg.to}` : null,
-        leg.depart_at ? `Departs: ${formatDTReadable(leg.depart_at)}` : null,
-        leg.arrive_at ? `Arrives: ${formatDTReadable(leg.arrive_at)}` : null,
-        leg.notes  ? `Notes: ${leg.notes}` : null,
-      ].filter(Boolean)
-
-      const dtStart = leg.depart_at ? isoToICS(leg.depart_at) : null
-      const dtEnd   = leg.arrive_at ? isoToICS(leg.arrive_at) : null
-
-      if (!dtStart) continue  // Can't make a calendar event without a start time
-
-      lines.push('BEGIN:VEVENT')
-      lines.push(`UID:${makeUID()}`)
-      lines.push(`DTSTAMP:${isoToICS(new Date().toISOString())}Z`)
-      lines.push(`SUMMARY:${escapeICS(summary)}`)
-      lines.push(`DTSTART:${dtStart}`)
-      lines.push(`DTEND:${dtEnd || dtStart}`)  // If no arrival, 0-duration point
-      if (leg.from) lines.push(`LOCATION:${escapeICS(leg.from)}`)
-      lines.push(`DESCRIPTION:${escapeICS(descParts.join('\\n'))}`)
-      lines.push('END:VEVENT')
-    }
-
-    // ── Accommodation ─────────────────────────────────────────────────────────
-    if (detail.accommodation || detail.accommodation_address) {
-      const accomName    = detail.accommodation || 'Accommodation'
-      const accomAddress = detail.accommodation_address || ''
-      const summary      = `🏨 ${accomName} · ${firstName}`
-
-      // Find check-in/out from legs: earliest arrival date → latest departure date
-      const legs = detail.legs || []
-      const arrivalDates  = legs.map(l => l.arrive_at?.slice(0, 10)).filter(Boolean).sort()
-      const departureDates = legs.map(l => l.depart_at?.slice(0, 10)).filter(Boolean).sort()
-
-      const checkIn  = arrivalDates[0]   || null
-      const checkOut = departureDates[departureDates.length - 1] || null
-
-      const descParts = [
-        `Traveler: ${name}`,
-        accomAddress ? `Address: ${accomAddress}` : null,
-        detail.notes ? `Notes: ${detail.notes}` : null,
-      ].filter(Boolean)
-
-      lines.push('BEGIN:VEVENT')
-      lines.push(`UID:${makeUID()}`)
-      lines.push(`DTSTAMP:${isoToICS(new Date().toISOString())}Z`)
-      lines.push(`SUMMARY:${escapeICS(summary)}`)
-
-      if (checkIn && checkOut && checkIn !== checkOut) {
-        // Multi-day all-day event
-        const [cy, cm, cd] = checkIn.split('-')
-        const startVal = `${cy}${cm}${cd}`
-        const [ey, em, ed] = checkOut.split('-')
-        const endVal = `${ey}${em}${ed}`
-        lines.push(`DTSTART;VALUE=DATE:${startVal}`)
-        lines.push(`DTEND;VALUE=DATE:${endVal}`)
-      } else if (checkIn) {
-        const [cy, cm, cd] = checkIn.split('-')
-        const val = `${cy}${cm}${cd}`
-        lines.push(`DTSTART;VALUE=DATE:${val}`)
-        lines.push(`DTEND;VALUE=DATE:${nextDay(val)}`)
-      } else {
-        // No dates — skip accommodation event
-        lines.pop() // remove DESCRIPTION prep
-        lines.splice(lines.lastIndexOf('BEGIN:VEVENT'))
-        continue
-      }
-
-      if (accomAddress) lines.push(`LOCATION:${escapeICS(accomAddress)}`)
-      lines.push(`DESCRIPTION:${escapeICS(descParts.join('\\n'))}`)
-      lines.push('END:VEVENT')
-    }
+    const member = members.find(m => m.id === detail.user_id)
+    const name   = member?.full_name || 'Traveler'
+    ;(detail.legs || []).forEach((leg, i) => {
+      legLines(leg, i, detail.user_id, name).forEach(l => lines.push(l))
+    })
+    accommodationLines(detail, detail.user_id, name).forEach(l => lines.push(l))
   }
 
   lines.push('END:VCALENDAR')
-  return lines.join('\r\n')
+  return injectVTimezones(lines).join('\r\n')
+}
+
+export function generateCombinedICS(events, travelDetails, members, selectedTravelerIds, trip) {
+  const lines = icsHeader(`${trip.name} – Full Trip`, trip?.timezone || null)
+  tripBannerLines(trip).forEach(l => lines.push(l))
+
+  const tz = trip?.timezone || 'UTC'
+  for (const event of events) {
+    eventLines(event, tz).forEach(l => lines.push(l))
+  }
+
+  const selected = Array.isArray(travelDetails)
+    ? travelDetails.filter(d => selectedTravelerIds.includes(d.user_id))
+    : Object.values(travelDetails).filter(d => selectedTravelerIds.includes(d.user_id))
+
+  for (const detail of selected) {
+    const member = members.find(m => m.id === detail.user_id)
+    const name   = member?.full_name || 'Traveler'
+    ;(detail.legs || []).forEach((leg, i) => {
+      legLines(leg, i, detail.user_id, name).forEach(l => lines.push(l))
+    })
+    accommodationLines(detail, detail.user_id, name).forEach(l => lines.push(l))
+  }
+
+  lines.push('END:VCALENDAR')
+  return injectVTimezones(lines).join('\r\n')
 }
 
 // ─── Download helpers ─────────────────────────────────────────────────────────
@@ -255,6 +383,13 @@ export function downloadTravelICS(travelDetails, members, selectedIds, tripName,
   )
 }
 
+export function downloadCombinedICS(events, travelDetails, members, selectedTravelerIds, trip) {
+  triggerDownload(
+    generateCombinedICS(events, travelDetails, members, selectedTravelerIds, trip),
+    `${trip.name} – Full Trip`
+  )
+}
+
 function triggerDownload(content, name) {
   const blob = new Blob([content], { type: 'text/calendar;charset=utf-8' })
   const url  = URL.createObjectURL(blob)
@@ -265,28 +400,4 @@ function triggerDownload(content, name) {
   a.click()
   document.body.removeChild(a)
   URL.revokeObjectURL(url)
-}
-
-// ─── Internal helpers ─────────────────────────────────────────────────────────
-
-function icsHeader(calName) {
-  return [
-    'BEGIN:VCALENDAR',
-    'VERSION:2.0',
-    'PRODID:-//Wander//Trip Planner//EN',
-    'CALSCALE:GREGORIAN',
-    'METHOD:PUBLISH',
-    `X-WR-CALNAME:${escapeICS(calName)}`,
-    'X-WR-TIMEZONE:UTC',
-  ]
-}
-
-function formatDTReadable(iso) {
-  if (!iso) return ''
-  try {
-    return new Date(iso).toLocaleString('en-US', {
-      month: 'short', day: 'numeric', year: 'numeric',
-      hour: '2-digit', minute: '2-digit',
-    })
-  } catch { return iso }
 }

@@ -4,6 +4,8 @@ import { db } from '../lib/firebase'
 import { useAuth } from '../contexts/AuthContext'
 import { geocodeCity } from '../lib/weather'
 import { X, Smile } from 'lucide-react'
+import TimezonePicker from './TimezonePicker'
+import { nearestTimezone, localTimezone } from '../lib/timezones'
 
 const PRESET_EMOJIS = [
   '✈️', '🏝️', '🗻', '🌆', '🏔️', '🏖️', '🌍', '🗼', '🎡', '🚂',
@@ -11,7 +13,6 @@ const PRESET_EMOJIS = [
   '🌊', '🏛️', '🎪', '🍣', '🥂', '🎿', '🤿', '🧗', '🛶', '🌺',
 ]
 
-// Full emoji categories for the picker
 const EMOJI_CATEGORIES = [
   { label: 'Travel', emojis: ['✈️', '🚂', '🚢', '🚁', '🛸', '🚡', '🛺', '🚤', '⛵', '🛥️', '🚀', '🛩️', '🚃', '🚌', '🚎', '🏎️', '🚓', '🚑', '🚒', '🚐', '🛻', '🚚', '🚛', '🚜', '🏍️', '🛵', '🚲', '🛴', '🛹', '🛼'] },
   { label: 'Places', emojis: ['🏝️', '🗻', '🌆', '🏔️', '🏖️', '🌍', '🗼', '🎡', '🏕️', '🌋', '🏜️', '🏛️', '🗽', '🗿', '🏯', '🏰', '🎠', '🎢', '🎪', '⛩️', '🕌', '🛕', '⛪', '🕍', '🏟️', '🏗️', '🌃', '🌉', '🌁', '🌄'] },
@@ -23,10 +24,14 @@ const EMOJI_CATEGORIES = [
 
 export default function NewTripModal({ onClose, onCreated }) {
   const { user } = useAuth()
-  const [form, setForm] = useState({ name: '', destination: '', start_date: '', end_date: '', cover_emoji: '✈️' })
-  const [saving, setSaving] = useState(false)
-  const [error, setError] = useState('')
-  const [showPicker, setShowPicker] = useState(false)
+  const [form, setForm] = useState({
+    name: '', destination: '', start_date: '', end_date: '',
+    cover_emoji: '✈️',
+    timezone: nearestTimezone(localTimezone()),
+  })
+  const [saving, setSaving]           = useState(false)
+  const [error, setError]             = useState('')
+  const [showPicker, setShowPicker]   = useState(false)
   const [pickerCategory, setPickerCategory] = useState(0)
   const [customInput, setCustomInput] = useState('')
   const customRef = useRef(null)
@@ -36,11 +41,16 @@ export default function NewTripModal({ onClose, onCreated }) {
     setSaving(true); setError('')
     const geo = await geocodeCity(form.destination)
     const tripRef = await addDoc(collection(db, 'trips'), {
-      name: form.name, destination: form.destination,
-      start_date: form.start_date || null, end_date: form.end_date || null,
-      cover_emoji: form.cover_emoji,
-      lat: geo?.lat || null, lon: geo?.lon || null,
-      created_by: user.id, created_at: serverTimestamp(),
+      name:         form.name,
+      destination:  form.destination,
+      start_date:   form.start_date  || null,
+      end_date:     form.end_date    || null,
+      cover_emoji:  form.cover_emoji,
+      timezone:     form.timezone    || null,
+      lat:          geo?.lat         || null,
+      lon:          geo?.lon         || null,
+      created_by:   user.id,
+      created_at:   serverTimestamp(),
     })
     await addDoc(collection(db, 'trip_members'), {
       trip_id: tripRef.id, user_id: user.id, role: 'owner', created_at: serverTimestamp(),
@@ -50,13 +60,8 @@ export default function NewTripModal({ onClose, onCreated }) {
 
   function handleCustomInput(val) {
     setCustomInput(val)
-    // Extract first emoji from typed input
-    const emojiRegex = /\p{Emoji_Presentation}|\p{Extended_Pictographic}/u
-    const match = val.match(emojiRegex)
-    if (match) {
-      setForm({ ...form, cover_emoji: match[0] })
-      setCustomInput(match[0])
-    }
+    const match = val.match(/\p{Emoji_Presentation}|\p{Extended_Pictographic}/u)
+    if (match) { setForm({ ...form, cover_emoji: match[0] }); setCustomInput(match[0]) }
   }
 
   return (
@@ -82,45 +87,34 @@ export default function NewTripModal({ onClose, onCreated }) {
             </div>
           )}
 
-          {/* Cover emoji section */}
+          {/* Cover emoji */}
           <div className="mb-5">
             <p className="text-xs tracking-widest uppercase mb-3" style={{ color: '#5a5248' }}>Cover Emoji</p>
-
-            {/* Selected emoji + open picker button */}
             <div className="flex items-center gap-3 mb-3">
               <div className="w-16 h-16 rounded-2xl flex items-center justify-center text-4xl flex-shrink-0"
                 style={{ background: 'rgba(212,184,122,0.12)', border: '2px solid rgba(212,184,122,0.3)' }}>
                 {form.cover_emoji}
               </div>
               <div className="flex-1 space-y-2">
-                {/* Type your own */}
                 <div className="flex items-center gap-2 px-3 py-2 rounded-xl"
                   style={{ background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(212,184,122,0.15)' }}>
                   <span className="text-xs" style={{ color: '#5a5248' }}>Type:</span>
-                  <input
-                    ref={customRef}
-                    value={customInput}
-                    onChange={e => handleCustomInput(e.target.value)}
+                  <input ref={customRef} value={customInput} onChange={e => handleCustomInput(e.target.value)}
                     placeholder="Paste or type any emoji…"
-                    className="flex-1 bg-transparent text-sm outline-none"
-                    style={{ color: '#d4cfc8' }}
-                  />
+                    className="flex-1 bg-transparent text-sm outline-none" style={{ color: '#d4cfc8' }} />
                 </div>
-                <button
-                  onClick={() => setShowPicker(!showPicker)}
+                <button onClick={() => setShowPicker(!showPicker)}
                   className="flex items-center gap-2 px-3 py-2 rounded-xl text-xs w-full transition-all"
                   style={{
                     background: showPicker ? 'rgba(212,184,122,0.15)' : 'rgba(255,255,255,0.04)',
                     border: showPicker ? '1px solid rgba(212,184,122,0.3)' : '1px solid rgba(212,184,122,0.12)',
                     color: showPicker ? '#d4b87a' : '#5a5248',
                   }}>
-                  <Smile size={12} />
-                  {showPicker ? 'Hide picker' : 'Browse emoji'}
+                  <Smile size={12} />{showPicker ? 'Hide picker' : 'Browse emoji'}
                 </button>
               </div>
             </div>
 
-            {/* Quick presets */}
             <div className="flex flex-wrap gap-1.5 mb-2">
               {PRESET_EMOJIS.map(e => (
                 <button key={e} onClick={() => { setForm({ ...form, cover_emoji: e }); setCustomInput('') }}
@@ -129,17 +123,13 @@ export default function NewTripModal({ onClose, onCreated }) {
                     background: form.cover_emoji === e ? 'rgba(212,184,122,0.2)' : 'rgba(255,255,255,0.04)',
                     border: form.cover_emoji === e ? '1px solid rgba(212,184,122,0.4)' : '1px solid transparent',
                     transform: form.cover_emoji === e ? 'scale(1.15)' : 'scale(1)',
-                  }}>
-                  {e}
-                </button>
+                  }}>{e}</button>
               ))}
             </div>
 
-            {/* Full picker */}
             {showPicker && (
               <div className="rounded-2xl overflow-hidden slide-up"
                 style={{ background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(212,184,122,0.1)' }}>
-                {/* Category tabs */}
                 <div className="flex overflow-x-auto gap-1 p-2" style={{ scrollbarWidth: 'none' }}>
                   {EMOJI_CATEGORIES.map((cat, i) => (
                     <button key={i} onClick={() => setPickerCategory(i)}
@@ -148,12 +138,9 @@ export default function NewTripModal({ onClose, onCreated }) {
                         background: pickerCategory === i ? 'rgba(212,184,122,0.2)' : 'transparent',
                         color: pickerCategory === i ? '#d4b87a' : '#5a5248',
                         border: pickerCategory === i ? '1px solid rgba(212,184,122,0.25)' : '1px solid transparent',
-                      }}>
-                      {cat.label}
-                    </button>
+                      }}>{cat.label}</button>
                   ))}
                 </div>
-                {/* Emoji grid */}
                 <div className="grid p-3 gap-1" style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(2.5rem, 1fr))' }}>
                   {EMOJI_CATEGORIES[pickerCategory].emojis.map(e => (
                     <button key={e} onClick={() => { setForm({ ...form, cover_emoji: e }); setCustomInput(''); setShowPicker(false) }}
@@ -161,9 +148,7 @@ export default function NewTripModal({ onClose, onCreated }) {
                       style={{
                         background: form.cover_emoji === e ? 'rgba(212,184,122,0.2)' : 'transparent',
                         border: form.cover_emoji === e ? '1px solid rgba(212,184,122,0.35)' : '1px solid transparent',
-                      }}>
-                      {e}
-                    </button>
+                      }}>{e}</button>
                   ))}
                 </div>
               </div>
@@ -192,6 +177,12 @@ export default function NewTripModal({ onClose, onCreated }) {
                   className="w-full bg-transparent text-sm outline-none" style={{ color: '#d4cfc8', background: 'transparent' }} />
               </Field>
             </div>
+            <Field label="Destination Timezone">
+              <TimezonePicker
+                value={form.timezone}
+                onChange={v => setForm({ ...form, timezone: v })}
+              />
+            </Field>
           </div>
 
           <button onClick={handleCreate} disabled={saving}

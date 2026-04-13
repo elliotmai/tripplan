@@ -2,31 +2,31 @@ rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
 
-    // PROFILES — any signed-in user can read; only the owner can write their own
+    // PROFILES
     match /profiles/{userId} {
       allow read:  if request.auth != null;
       allow write: if request.auth != null && request.auth.uid == userId;
     }
 
-    // TRIPS — any signed-in user can create or read; updates allowed when authenticated
+    // TRIPS
     match /trips/{tripId} {
       allow read, update: if request.auth != null;
       allow create:       if request.auth != null;
     }
 
-    // TRIP MEMBERS — any signed-in user can read or create membership records
+    // TRIP MEMBERS
     match /trip_members/{memberId} {
       allow read, create, delete: if request.auth != null;
     }
 
-    // ITINERARY EVENTS — members can read/create; only the creator can delete/update
+    // ITINERARY EVENTS
     match /itinerary_events/{eventId} {
       allow read, create: if request.auth != null;
       allow update, delete: if request.auth != null
                             && resource.data.created_by == request.auth.uid;
     }
 
-    // TRAVEL DETAILS — any signed-in user can read; only the record owner can write
+    // TRAVEL DETAILS
     match /travel_details/{detailId} {
       allow read:   if request.auth != null;
       allow create: if request.auth != null
@@ -35,19 +35,19 @@ service cloud.firestore {
                     && resource.data.user_id == request.auth.uid;
     }
 
-    // POLLS — any signed-in user can read/create; only the creator can delete
+    // POLLS
     match /polls/{pollId} {
       allow read, create: if request.auth != null;
       allow delete:       if request.auth != null
                           && resource.data.created_by == request.auth.uid;
     }
 
-    // POLL OPTIONS — any signed-in user can read/create (tied to polls above)
+    // POLL OPTIONS
     match /poll_options/{optionId} {
       allow read, create: if request.auth != null;
     }
 
-    // POLL VOTES — users can read all votes; only manage their own
+    // POLL VOTES
     match /poll_votes/{voteId} {
       allow read:   if request.auth != null;
       allow create: if request.auth != null
@@ -56,11 +56,21 @@ service cloud.firestore {
                     && resource.data.user_id == request.auth.uid;
     }
 
-    // PHOTO ALBUMS — any signed-in user can read/create; only the adder can delete
+    // PHOTO ALBUMS
     match /photo_albums/{albumId} {
       allow read, create: if request.auth != null;
       allow delete:       if request.auth != null
                           && resource.data.added_by == request.auth.uid;
+    }
+
+    // CALENDAR TOKENS
+    // Tokens are created and read by their owner only.
+    // The Cloud Function uses the Admin SDK which bypasses these rules entirely.
+    match /calendar_tokens/{token} {
+      allow read, delete: if request.auth != null
+                          && resource.data.created_by == request.auth.uid;
+      allow create:       if request.auth != null
+                          && request.resource.data.created_by == request.auth.uid;
     }
   }
 }

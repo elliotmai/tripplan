@@ -5,12 +5,14 @@ import {
 } from 'firebase/firestore'
 import { db } from '../lib/firebase'
 import { fetchWeatherForTrip } from '../lib/weather'
-import { downloadICS } from '../lib/ical'
+import { downloadICS, downloadCombinedICS } from '../lib/ical'
 import { format } from 'date-fns'
 import {
   Plus, Clock, MapPin, Trash2, ChevronDown, ArrowRight,
   Pencil, X, Check, CalendarDays, Users,
 } from 'lucide-react'
+import TimezonePicker from './TimezonePicker'
+import { localTimezone } from '../lib/timezones'
 
 // ─── constants ────────────────────────────────────────────────────────────────
 
@@ -39,8 +41,9 @@ const TRANSPORT_META = {
 const BLANK_FORM = {
   title: '', time: '', end_time: '', location: '', notes: '',
   type: 'activity',
-  assignees: [],        // [] = no one, array of IDs = specific people
-  assignAll: false,     // true = everyone
+  assignees: [],
+  assignAll: false,
+  timezone: '',
 }
 
 // ─── helpers ──────────────────────────────────────────────────────────────────
@@ -234,7 +237,7 @@ function EventFormFields({ form, setForm, members }) {
         style={{ color: '#e8d5a3', borderBottom: '1px solid rgba(212,184,122,0.2)', paddingBottom: '8px' }}
       />
 
-      {/* Time + type */}
+      {/* Time + type row */}
       <div className="grid grid-cols-3 gap-3">
         <div>
           <p className="text-xs mb-1" style={{ color: '#5a5248' }}>Start time</p>
@@ -262,6 +265,17 @@ function EventFormFields({ form, setForm, members }) {
           </select>
         </div>
       </div>
+
+      {/* Timezone — only relevant when a time is set */}
+      {form.time && (
+        <div>
+          <p className="text-xs mb-1" style={{ color: '#5a5248' }}>Timezone</p>
+          <TimezonePicker
+            value={form.timezone}
+            onChange={v => setForm({ ...form, timezone: v })}
+          />
+        </div>
+      )}
 
       <input placeholder="Location (optional)" value={form.location}
         onChange={e => setForm({ ...form, location: e.target.value })}
@@ -404,12 +418,11 @@ function EventItem({ event, members, onEdit, onDelete, canEdit }) {
 
 // ─── Export modal ─────────────────────────────────────────────────────────────
 
-function ExportModal({ events, members, trip, scope, onClose }) {
+function ExportModal({ events, members, travelDetails, trip, scope, onClose }) {
   const scopeEvents = scope === 'all' ? events : events.filter(e => e.date === scope)
   const usedTypes = [...new Set(scopeEvents.map(e => e.type))]
   const allMemberIds = members.map(m => m.id)
 
-  // Collect all assignee IDs that actually appear in scope events
   const usedAssigneeIds = [...new Set(
     scopeEvents.flatMap(e => {
       const { assignees, assignAll } = parseAssigned(e.assigned_to, allMemberIds)
@@ -423,7 +436,11 @@ function ExportModal({ events, members, trip, scope, onClose }) {
 
   const [selTypes, setSelTypes] = useState(new Set(usedTypes))
   const [selPeople, setSelPeople] = useState(new Set(['__unassigned__', ...usedAssigneeIds]))
-  const [exported, setExported] = useState(false)
+  const [exported, setExported] = useState(null)  // null | 'itinerary' | 'combined'
+
+  // Members who have travel details
+  const travelMemberIds = travelDetails.map(d => d.user_id)
+  const hasTravelData = scope === 'all' && travelMemberIds.length > 0
 
   function toggleType(v) {
     setSelTypes(prev => { const n = new Set(prev); n.has(v) ? n.delete(v) : n.add(v); return n })
@@ -440,13 +457,18 @@ function ExportModal({ events, members, trip, scope, onClose }) {
     return ids.some(id => selPeople.has(id))
   })
 
-  function doExport() {
+  function doExport(type) {
     if (!filtered.length) return
     const label = scope === 'all'
       ? trip.name
       : `${trip.name} – ${format(new Date(scope + 'T12:00:00'), 'MMM d')}`
-    downloadICS(filtered, label, trip)
-    setExported(true)
+
+    if (type === 'combined') {
+      downloadCombinedICS(filtered, travelDetails, members, travelMemberIds, trip)
+    } else {
+      downloadICS(filtered, label, trip)
+    }
+    setExported(type)
     setTimeout(onClose, 1200)
   }
 
@@ -570,26 +592,45 @@ function ExportModal({ events, members, trip, scope, onClose }) {
             </div>
           )}
 
-          {/* Export button */}
+          {/* Export buttons */}
           <div className="space-y-3 pt-1">
             <div className="flex items-center justify-between px-1">
               <p className="text-xs" style={{ color: '#5a5248' }}>
-                {filtered.length === 0 ? 'No events match your filters' : `${filtered.length} event${filtered.length !== 1 ? 's' : ''} will be exported`}
+                {filtered.length === 0 ? 'No events match your filters' : `${filtered.length} event${filtered.length !== 1 ? 's' : ''} selected`}
               </p>
               {filtered.length > 0 && <p className="text-xs" style={{ color: '#3d3830' }}>→ .ics file</p>}
             </div>
-            <button onClick={doExport} disabled={filtered.length === 0}
-              className="w-full py-4 rounded-2xl font-medium tracking-wider transition-all active:scale-95 flex items-center justify-center gap-2"
+
+            {/* Itinerary only */}
+            <button onClick={() => doExport('itinerary')} disabled={filtered.length === 0}
+              className="w-full py-3.5 rounded-2xl font-medium tracking-wider transition-all active:scale-95 flex items-center justify-center gap-2"
               style={{
-                background: exported ? 'rgba(138,171,142,0.2)' : filtered.length === 0 ? '#2a2621' : 'linear-gradient(135deg, #d4b87a 0%, #c19a4e 100%)',
-                color: exported ? '#8aab8e' : filtered.length === 0 ? '#3d3830' : '#0a0908',
+                background: exported === 'itinerary' ? 'rgba(138,171,142,0.2)' : filtered.length === 0 ? '#2a2621' : 'linear-gradient(135deg, #d4b87a 0%, #c19a4e 100%)',
+                color: exported === 'itinerary' ? '#8aab8e' : filtered.length === 0 ? '#3d3830' : '#0a0908',
                 cursor: filtered.length === 0 ? 'default' : 'pointer',
               }}>
-              {exported
-                ? <><Check size={15} /> Exported!</>
-                : <><CalendarDays size={15} /> Export {filtered.length > 0 ? filtered.length : ''} Event{filtered.length !== 1 ? 's' : ''}</>
+              {exported === 'itinerary'
+                ? <><Check size={14} /> Exported!</>
+                : <><CalendarDays size={14} /> Export Itinerary ({filtered.length} event{filtered.length !== 1 ? 's' : ''})</>
               }
             </button>
+
+            {/* Combined itinerary + travel (only when trip-level export and travel data exists) */}
+            {hasTravelData && (
+              <button onClick={() => doExport('combined')} disabled={filtered.length === 0}
+                className="w-full py-3.5 rounded-2xl font-medium tracking-wider transition-all active:scale-95 flex items-center justify-center gap-2"
+                style={{
+                  background: exported === 'combined' ? 'rgba(138,171,142,0.2)' : filtered.length === 0 ? '#2a2621' : 'rgba(122,154,181,0.15)',
+                  border: filtered.length === 0 ? 'none' : '1px solid rgba(122,154,181,0.3)',
+                  color: exported === 'combined' ? '#8aab8e' : filtered.length === 0 ? '#3d3830' : '#7a9ab5',
+                  cursor: filtered.length === 0 ? 'default' : 'pointer',
+                }}>
+                {exported === 'combined'
+                  ? <><Check size={14} /> Exported!</>
+                  : <><CalendarDays size={14} /> Export Itinerary + Travel (all in one)</>
+                }
+              </button>
+            )}
           </div>
         </div>
       </div>
@@ -604,7 +645,7 @@ export default function ItineraryTab({ tripId, trip, days, members, travelDetail
   const [weather, setWeather] = useState([])
   const [expandedDay, setExpandedDay] = useState(0)
   const [showAddForm, setShowAddForm] = useState(null)
-  const [addForm, setAddForm] = useState(BLANK_FORM)
+  const [addForm, setAddForm] = useState({ ...BLANK_FORM, timezone: trip.timezone || '' })
   const [editingId, setEditingId] = useState(null)
   const [editForm, setEditForm] = useState(BLANK_FORM)
   const [saving, setSaving] = useState(false)
@@ -642,10 +683,11 @@ export default function ItineraryTab({ tripId, trip, days, members, travelDetail
       notes: addForm.notes || null,
       type: addForm.type,
       assigned_to: serializeAssigned(addForm.assignAll, addForm.assignees, allMemberIds),
+      timezone: addForm.timezone || trip.timezone || null,
       created_by: currentUser.id,
       created_at: serverTimestamp(),
     })
-    setAddForm(BLANK_FORM)
+    setAddForm({ ...BLANK_FORM, timezone: trip.timezone || '' })
     setShowAddForm(null)
     setSaving(false)
     loadEvents()
@@ -662,6 +704,7 @@ export default function ItineraryTab({ tripId, trip, days, members, travelDetail
       notes: editForm.notes || null,
       type: editForm.type,
       assigned_to: serializeAssigned(editForm.assignAll, editForm.assignees, allMemberIds),
+      timezone: editForm.timezone || trip.timezone || null,
       updated_at: serverTimestamp(),
     })
     setSaving(false)
@@ -686,6 +729,7 @@ export default function ItineraryTab({ tripId, trip, days, members, travelDetail
       type: event.type || 'activity',
       assignees,
       assignAll,
+      timezone: event.timezone || trip.timezone || '',
     })
     setEditingId(event.id)
     setShowAddForm(null)
@@ -845,12 +889,16 @@ export default function ItineraryTab({ tripId, trip, days, members, travelDetail
                     members={members}
                     saving={saving}
                     onSave={() => addEvent(dateStr)}
-                    onCancel={() => { setShowAddForm(null); setAddForm(BLANK_FORM) }}
+                    onCancel={() => { setShowAddForm(null); setAddForm({ ...BLANK_FORM, timezone: trip.timezone || '' }) }}
                   />
                 ) : (
                   <div className="flex gap-2 mt-1">
                     <button
-                      onClick={() => { setShowAddForm(dateStr); setEditingId(null) }}
+                      onClick={() => {
+                        setShowAddForm(dateStr)
+                        setEditingId(null)
+                        setAddForm({ ...BLANK_FORM, timezone: trip.timezone || '' })
+                      }}
                       className="flex-1 flex items-center justify-center gap-2 py-3 rounded-xl text-xs transition-all"
                       style={{ color: '#5a5248', border: '1px dashed rgba(212,184,122,0.2)' }}>
                       <Plus size={12} />Add event
@@ -876,6 +924,7 @@ export default function ItineraryTab({ tripId, trip, days, members, travelDetail
         <ExportModal
           events={events}
           members={members}
+          travelDetails={travelDetails}
           trip={trip}
           scope={exportScope}
           onClose={() => setExportScope(null)}

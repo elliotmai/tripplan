@@ -5,7 +5,11 @@ import {
 } from 'firebase/firestore'
 import { db } from '../lib/firebase'
 import { downloadTravelICS } from '../lib/ical'
-import { Edit2, UserPlus, Plus, Trash2, ArrowRight, ChevronDown, ChevronUp, CalendarDays, Check, X } from 'lucide-react'
+import {
+  Edit2, UserPlus, Plus, Trash2,
+  ChevronDown, ChevronUp, CalendarDays, Check, X,
+} from 'lucide-react'
+import TimezonePicker from './TimezonePicker'
 
 // ─── constants ────────────────────────────────────────────────────────────────
 
@@ -22,19 +26,26 @@ const TRANSPORT_OPTIONS = [
 ]
 const TRANSPORT_MAP = Object.fromEntries(TRANSPORT_OPTIONS.map(t => [t.value, t]))
 
-const BLANK_LEG = { transport: 'flight', number: '', from: '', to: '', depart_at: '', arrive_at: '', notes: '' }
+const BLANK_LEG = {
+  transport: 'flight', number: '', from: '', to: '',
+  depart_at: '', arrive_at: '', depart_tz: '', arrive_tz: '', notes: '',
+}
 const BLANK_DETAILS = { legs: [], accommodation: '', accommodation_address: '', notes: '' }
 
 function newLeg() { return { ...BLANK_LEG, _id: Math.random().toString(36).slice(2) } }
 
 // ─── helpers ──────────────────────────────────────────────────────────────────
 
-function formatDT(dt) {
+function formatDT(dt, tz) {
   if (!dt) return null
   try {
     return new Date(dt).toLocaleString('en-US', {
-      month: 'short', day: 'numeric',
-      hour: '2-digit', minute: '2-digit',
+      timeZone: tz || undefined,
+      month: 'short',
+      day: 'numeric',
+      hour: '2-digit',
+      minute: '2-digit',
+      timeZoneName: tz ? 'short' : undefined,
     })
   } catch { return dt }
 }
@@ -71,18 +82,12 @@ function ExportTravelModal({ travelDetails, members, trip, onClose }) {
     setTimeout(onClose, 1200)
   }
 
-  // Count legs per member
-  function legCount(memberId) {
-    return (travelDetails[memberId]?.legs || []).length
-  }
-
   return (
     <div className="fixed inset-0 z-50 flex items-end justify-center"
       style={{ background: 'rgba(0,0,0,0.75)', backdropFilter: 'blur(6px)' }}>
       <div className="w-full max-w-lg rounded-t-3xl slide-up overflow-hidden"
         style={{ background: '#1c1916', border: '1px solid rgba(212,184,122,0.14)', maxHeight: '88vh', display: 'flex', flexDirection: 'column' }}>
 
-        {/* Header */}
         <div className="flex items-center justify-between px-6 pt-6 pb-4 flex-shrink-0">
           <div>
             <h2 className="font-display text-2xl font-light" style={{ color: '#e8d5a3', fontStyle: 'italic' }}>
@@ -99,8 +104,6 @@ function ExportTravelModal({ travelDetails, members, trip, onClose }) {
         </div>
 
         <div className="overflow-y-auto flex-1 px-6 pb-8 space-y-5">
-
-          {/* Select all / none */}
           <div className="flex items-center justify-between">
             <p className="text-xs tracking-widest uppercase" style={{ color: '#5a5248' }}>Travelers</p>
             <div className="flex gap-3">
@@ -117,7 +120,6 @@ function ExportTravelModal({ travelDetails, members, trip, onClose }) {
             </p>
           )}
 
-          {/* Member rows */}
           <div className="space-y-2">
             {membersWithDetails.map(member => {
               const detail = travelDetails[member.id]
@@ -125,8 +127,6 @@ function ExportTravelModal({ travelDetails, members, trip, onClose }) {
               const hasAccom = !!(detail?.accommodation || detail?.accommodation_address)
               const checked = selected.has(member.id)
               const initial = member.full_name?.[0]?.toUpperCase() || '?'
-
-              // Build a mini summary of what will be exported
               const summaryParts = []
               if (legs.length > 0) summaryParts.push(`${legs.length} leg${legs.length !== 1 ? 's' : ''}`)
               if (hasAccom) summaryParts.push('accommodation')
@@ -138,13 +138,10 @@ function ExportTravelModal({ travelDetails, members, trip, onClose }) {
                     background: checked ? 'rgba(212,184,122,0.08)' : 'rgba(255,255,255,0.03)',
                     border: checked ? '1px solid rgba(212,184,122,0.25)' : '1px solid rgba(255,255,255,0.06)',
                   }}>
-                  {/* Avatar */}
                   <div className="w-10 h-10 rounded-full flex items-center justify-center font-display text-lg flex-shrink-0"
                     style={{ background: 'linear-gradient(135deg, #d4b87a 0%, #c19a4e 100%)', color: '#0a0908' }}>
                     {initial}
                   </div>
-
-                  {/* Name + summary */}
                   <div className="flex-1 min-w-0">
                     <p className="text-sm font-medium" style={{ color: checked ? '#d4cfc8' : '#5a5248' }}>
                       {member.full_name}
@@ -153,8 +150,6 @@ function ExportTravelModal({ travelDetails, members, trip, onClose }) {
                       {summaryParts.length > 0 ? summaryParts.join(' · ') : 'No details'}
                     </p>
                   </div>
-
-                  {/* Leg transport icons */}
                   {legs.length > 0 && (
                     <div className="flex items-center gap-0.5 flex-shrink-0">
                       {[...new Set(legs.map(l => TRANSPORT_MAP[l.transport]?.icon || '🛸'))].map((icon, i) => (
@@ -162,8 +157,6 @@ function ExportTravelModal({ travelDetails, members, trip, onClose }) {
                       ))}
                     </div>
                   )}
-
-                  {/* Checkbox */}
                   <div className="w-5 h-5 rounded-md flex items-center justify-center flex-shrink-0"
                     style={{
                       background: checked ? '#d4b87a' : 'rgba(255,255,255,0.06)',
@@ -176,7 +169,6 @@ function ExportTravelModal({ travelDetails, members, trip, onClose }) {
             })}
           </div>
 
-          {/* What gets exported note */}
           {selected.size > 0 && (
             <div className="px-4 py-3 rounded-xl"
               style={{ background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.06)' }}>
@@ -186,7 +178,6 @@ function ExportTravelModal({ travelDetails, members, trip, onClose }) {
             </div>
           )}
 
-          {/* Export button */}
           <div className="space-y-2 pt-1">
             <div className="flex items-center justify-between px-1">
               <p className="text-xs" style={{ color: '#5a5248' }}>
@@ -196,15 +187,12 @@ function ExportTravelModal({ travelDetails, members, trip, onClose }) {
               </p>
               {selected.size > 0 && <p className="text-xs" style={{ color: '#3d3830' }}>→ .ics file</p>}
             </div>
-            <button
-              onClick={doExport}
-              disabled={selected.size === 0}
+            <button onClick={doExport} disabled={selected.size === 0}
               className="w-full py-4 rounded-2xl font-medium tracking-wider transition-all active:scale-95 flex items-center justify-center gap-2"
               style={{
                 background: exported
                   ? 'rgba(138,171,142,0.2)'
-                  : selected.size === 0
-                    ? '#2a2621'
+                  : selected.size === 0 ? '#2a2621'
                     : 'linear-gradient(135deg, #d4b87a 0%, #c19a4e 100%)',
                 color: exported ? '#8aab8e' : selected.size === 0 ? '#3d3830' : '#0a0908',
                 cursor: selected.size === 0 ? 'default' : 'pointer',
@@ -221,7 +209,7 @@ function ExportTravelModal({ travelDetails, members, trip, onClose }) {
   )
 }
 
-// ─── main component ───────────────────────────────────────────────────────────
+// ─── Main component ───────────────────────────────────────────────────────────
 
 export default function TravelersTab({ tripId, trip, members, currentUser, onUpdate }) {
   const [detailsByUser, setDetailsByUser] = useState({})
@@ -349,22 +337,19 @@ export default function TravelersTab({ tripId, trip, members, currentUser, onUpd
   return (
     <div className="px-6 pt-4 space-y-4">
 
-      {/* Export + Invite row */}
-      <div className="flex gap-3">
-        {/* Export to calendar — only if any details exist */}
-        {hasAnyDetails && (
-          <button
-            onClick={() => setShowExport(true)}
-            className="flex items-center justify-center gap-2 px-4 py-3 rounded-2xl text-xs transition-all flex-1"
-            style={{
-              background: 'rgba(212,184,122,0.07)',
-              border: '1px solid rgba(212,184,122,0.15)',
-              color: '#d4b87a',
-            }}>
-            <CalendarDays size={13} />Export travel to calendar
-          </button>
-        )}
-      </div>
+      {/* Export button */}
+      {hasAnyDetails && (
+        <button
+          onClick={() => setShowExport(true)}
+          className="w-full flex items-center justify-center gap-2 px-4 py-3 rounded-2xl text-xs transition-all"
+          style={{
+            background: 'rgba(212,184,122,0.07)',
+            border: '1px solid rgba(212,184,122,0.15)',
+            color: '#d4b87a',
+          }}>
+          <CalendarDays size={13} />Export travel to calendar
+        </button>
+      )}
 
       {/* Invite */}
       {isOwner && (
@@ -400,7 +385,7 @@ export default function TravelersTab({ tripId, trip, members, currentUser, onUpd
         return (
           <div key={member.id} className="glass rounded-2xl overflow-hidden fade-in">
 
-            {/* ── Member header ── */}
+            {/* Member header */}
             <div className="flex items-center justify-between p-5"
               style={{ borderBottom: (isEditing || (details && isExpanded)) ? '1px solid rgba(212,184,122,0.08)' : 'none' }}>
               <button
@@ -449,7 +434,7 @@ export default function TravelersTab({ tripId, trip, members, currentUser, onUpd
               </div>
             </div>
 
-            {/* ── View mode ── */}
+            {/* View mode */}
             {!isEditing && details && isExpanded && (
               <div className="px-5 pb-5 pt-4 space-y-4 slide-up">
                 {legs.length > 0 && (
@@ -467,7 +452,7 @@ export default function TravelersTab({ tripId, trip, members, currentUser, onUpd
               </div>
             )}
 
-            {/* ── Edit mode ── */}
+            {/* Edit mode */}
             {isEditing && (
               <div className="px-5 pb-5 pt-4 space-y-5 slide-up">
 
@@ -571,6 +556,7 @@ function LegEditor({ leg, idx, total, onUpdate, onRemove, onMove }) {
     <div className="rounded-xl overflow-hidden"
       style={{ background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.06)' }}>
 
+      {/* Leg header */}
       <div className="flex items-center gap-2 px-3 py-2.5"
         style={{ borderBottom: open ? '1px solid rgba(255,255,255,0.05)' : 'none' }}>
         <span className="text-base flex-shrink-0">{transport.icon}</span>
@@ -599,8 +585,11 @@ function LegEditor({ leg, idx, total, onUpdate, onRemove, onMove }) {
         </div>
       </div>
 
+      {/* Leg body */}
       {open && (
         <div className="px-3 py-3 space-y-3">
+
+          {/* Transport type */}
           <div>
             <p className="text-xs mb-1.5" style={{ color: '#5a5248' }}>Transport</p>
             <div className="flex flex-wrap gap-1.5">
@@ -618,6 +607,7 @@ function LegEditor({ leg, idx, total, onUpdate, onRemove, onMove }) {
             </div>
           </div>
 
+          {/* From / To */}
           <div className="grid grid-cols-2 gap-2">
             <InlineField label="From">
               <input value={leg.from} onChange={e => onUpdate('from', e.target.value)}
@@ -631,35 +621,54 @@ function LegEditor({ leg, idx, total, onUpdate, onRemove, onMove }) {
             </InlineField>
           </div>
 
-          <div className="grid grid-cols-1 gap-2">
-            {['flight', 'train', 'bus', 'ferry', 'subway'].includes(leg.transport) && (
-              <InlineField label={leg.transport === 'flight' ? 'Flight number' : leg.transport === 'train' ? 'Train number' : 'Route / Line'}>
-                <input value={leg.number} onChange={e => onUpdate('number', e.target.value)}
-                  placeholder={leg.transport === 'flight' ? 'e.g. BA123' : leg.transport === 'train' ? 'e.g. ICE 607' : 'e.g. Line 4'}
-                  className="w-full bg-transparent text-xs outline-none" style={{ color: '#d4cfc8' }} />
-              </InlineField>
-            )}
-            <div className="grid grid-cols-2 gap-2">
+          {/* Number */}
+          {['flight', 'train', 'bus', 'ferry', 'subway'].includes(leg.transport) && (
+            <InlineField label={leg.transport === 'flight' ? 'Flight number' : leg.transport === 'train' ? 'Train number' : 'Route / Line'}>
+              <input value={leg.number} onChange={e => onUpdate('number', e.target.value)}
+                placeholder={leg.transport === 'flight' ? 'e.g. BA123' : leg.transport === 'train' ? 'e.g. ICE 607' : 'e.g. Line 4'}
+                className="w-full bg-transparent text-xs outline-none" style={{ color: '#d4cfc8' }} />
+            </InlineField>
+          )}
+
+          {/* Departs + Arrives with timezones */}
+          <div className="grid grid-cols-2 gap-3">
+            <div className="space-y-2">
               <InlineField label="Departs">
                 <input type="datetime-local" value={leg.depart_at}
                   onChange={e => onUpdate('depart_at', e.target.value)}
                   className="w-full bg-transparent text-xs outline-none"
                   style={{ color: '#d4cfc8', background: 'transparent' }} />
               </InlineField>
+              <InlineField label="Departure timezone">
+                <TimezonePicker
+                  value={leg.depart_tz}
+                  onChange={v => onUpdate('depart_tz', v)}
+                />
+              </InlineField>
+            </div>
+            <div className="space-y-2">
               <InlineField label="Arrives">
                 <input type="datetime-local" value={leg.arrive_at}
                   onChange={e => onUpdate('arrive_at', e.target.value)}
                   className="w-full bg-transparent text-xs outline-none"
                   style={{ color: '#d4cfc8', background: 'transparent' }} />
               </InlineField>
+              <InlineField label="Arrival timezone">
+                <TimezonePicker
+                  value={leg.arrive_tz || leg.depart_tz}
+                  onChange={v => onUpdate('arrive_tz', v)}
+                />
+              </InlineField>
             </div>
           </div>
 
+          {/* Notes */}
           <InlineField label="Notes (optional)">
             <input value={leg.notes} onChange={e => onUpdate('notes', e.target.value)}
               placeholder="Seat, booking ref, terminal…"
               className="w-full bg-transparent text-xs outline-none" style={{ color: '#d4cfc8' }} />
           </InlineField>
+
         </div>
       )}
     </div>
@@ -669,8 +678,6 @@ function LegEditor({ leg, idx, total, onUpdate, onRemove, onMove }) {
 // ─── JourneyTimeline (view mode) ──────────────────────────────────────────────
 
 function JourneyTimeline({ legs }) {
-  function pad(n) { return String(n).padStart(2, '0') }
-
   return (
     <div className="space-y-0">
       {legs.map((leg, idx) => {
@@ -687,7 +694,11 @@ function JourneyTimeline({ legs }) {
               </div>
               <div className="flex-1 pb-3 min-w-0">
                 <p className="text-sm font-medium" style={{ color: '#d4cfc8' }}>{leg.from || '—'}</p>
-                {leg.depart_at && <p className="text-xs" style={{ color: '#5a5248' }}>{formatDT(leg.depart_at)}</p>}
+                {leg.depart_at && (
+                  <p className="text-xs" style={{ color: '#5a5248' }}>
+                    {formatDT(leg.depart_at, leg.depart_tz)}
+                  </p>
+                )}
                 <div className="flex items-center gap-2 my-2">
                   <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs"
                     style={{ background: 'rgba(212,184,122,0.08)', border: '1px solid rgba(212,184,122,0.15)', color: '#b5aea4' }}>
@@ -714,7 +725,11 @@ function JourneyTimeline({ legs }) {
                 </div>
                 <div className="flex-1 pb-3 min-w-0">
                   <p className="text-sm font-medium" style={{ color: '#d4cfc8' }}>{leg.to || '—'}</p>
-                  {leg.arrive_at && <p className="text-xs" style={{ color: '#5a5248' }}>{formatDT(leg.arrive_at)}</p>}
+                  {leg.arrive_at && (
+                    <p className="text-xs" style={{ color: '#5a5248' }}>
+                      {formatDT(leg.arrive_at, leg.arrive_tz || leg.depart_tz)}
+                    </p>
+                  )}
                 </div>
               </div>
             )}

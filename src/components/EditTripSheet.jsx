@@ -3,6 +3,8 @@ import { doc, updateDoc, serverTimestamp } from 'firebase/firestore'
 import { db } from '../lib/firebase'
 import { geocodeCity } from '../lib/weather'
 import { X, Smile } from 'lucide-react'
+import TimezonePicker from './TimezonePicker'
+import { nearestTimezone } from '../lib/timezones'
 
 const PRESET_EMOJIS = [
   '✈️','🏝️','🗻','🌆','🏔️','🏖️','🌍','🗼','🎡','🚂',
@@ -26,6 +28,7 @@ export default function EditTripSheet({ trip, onClose, onSaved }) {
     start_date:   trip.start_date  || '',
     end_date:     trip.end_date    || '',
     cover_emoji:  trip.cover_emoji || '✈️',
+    timezone:     trip.timezone    || nearestTimezone(null),
   })
   const [saving, setSaving]           = useState(false)
   const [error, setError]             = useState('')
@@ -43,7 +46,6 @@ export default function EditTripSheet({ trip, onClose, onSaved }) {
     if (!form.name.trim() || !form.destination.trim()) { setError('Name and destination are required.'); return }
     setSaving(true); setError('')
 
-    // Re-geocode only if destination changed
     let lat = trip.lat, lon = trip.lon
     if (form.destination.trim() !== trip.destination.trim()) {
       const geo = await geocodeCity(form.destination)
@@ -51,13 +53,14 @@ export default function EditTripSheet({ trip, onClose, onSaved }) {
     }
 
     await updateDoc(doc(db, 'trips', trip.id), {
-      name:         form.name,
-      destination:  form.destination,
-      start_date:   form.start_date  || null,
-      end_date:     form.end_date    || null,
-      cover_emoji:  form.cover_emoji,
+      name:        form.name,
+      destination: form.destination,
+      start_date:  form.start_date  || null,
+      end_date:    form.end_date    || null,
+      cover_emoji: form.cover_emoji,
+      timezone:    form.timezone    || null,
       lat, lon,
-      updated_at:   serverTimestamp(),
+      updated_at:  serverTimestamp(),
     })
 
     setSaving(false)
@@ -116,7 +119,6 @@ export default function EditTripSheet({ trip, onClose, onSaved }) {
               </div>
             </div>
 
-            {/* Presets */}
             <div className="flex flex-wrap gap-1.5 mb-2">
               {PRESET_EMOJIS.map(e => (
                 <button key={e} onClick={() => { setForm({ ...form, cover_emoji: e }); setCustomInput('') }}
@@ -179,6 +181,12 @@ export default function EditTripSheet({ trip, onClose, onSaved }) {
                   className="w-full bg-transparent text-sm outline-none" style={{ color: '#d4cfc8', background: 'transparent' }} />
               </Field>
             </div>
+            <Field label="Destination Timezone">
+              <TimezonePicker
+                value={form.timezone}
+                onChange={v => setForm({ ...form, timezone: v })}
+              />
+            </Field>
           </div>
 
           <button onClick={handleSave} disabled={saving}

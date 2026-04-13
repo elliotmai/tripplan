@@ -1,0 +1,52 @@
+<svg width="1024" height="1024" viewBox="0 0 680 680" role="img" xmlns="http://www.w3.org/2000/svg">
+  <title>Wander app icon</title>
+  <desc>Dark app icon with compass rose mark and wander wordmark in gold</desc>
+  <defs>
+    <radialGradient id="bg" cx="50%" cy="35%" r="65%">
+      <stop offset="0%" stop-color="#2a2214"/>
+      <stop offset="100%" stop-color="#0d0b09"/>
+    </radialGradient>
+    <radialGradient id="goldGlow" cx="50%" cy="50%" r="50%">
+      <stop offset="0%" stop-color="#e8d5a3" stop-opacity="0.18"/>
+      <stop offset="100%" stop-color="#e8d5a3" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="goldMain" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#e8d5a3"/>
+      <stop offset="50%" stop-color="#d4b87a"/>
+      <stop offset="100%" stop-color="#b8923e"/>
+    </linearGradient>
+    <linearGradient id="goldDim" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#c9a85c" stop-opacity="0.7"/>
+      <stop offset="100%" stop-color="#9a7230" stop-opacity="0.7"/>
+    </linearGradient>
+  </defs>
+  <rect x="0" y="0" width="680" height="680" rx="148" fill="url(#bg)"/>
+  <ellipse cx="340" cy="300" rx="200" ry="180" fill="url(#goldGlow)"/>
+  <circle cx="340" cy="300" r="168" fill="none" stroke="#d4b87a" stroke-width="0.8" stroke-opacity="0.25"/>
+  <circle cx="340" cy="300" r="130" fill="none" stroke="#d4b87a" stroke-width="0.5" stroke-opacity="0.15"/>
+  <g stroke="#c9a85c" stroke-width="1.5" stroke-linecap="round" stroke-opacity="0.5">
+    <line x1="340" y1="120" x2="340" y2="136"/>
+    <line x1="340" y1="464" x2="340" y2="480"/>
+    <line x1="160" y1="300" x2="176" y2="300"/>
+    <line x1="504" y1="300" x2="520" y2="300"/>
+    <line x1="221" y1="181" x2="230" y2="190"/>
+    <line x1="459" y1="181" x2="450" y2="190"/>
+    <line x1="221" y1="419" x2="230" y2="410"/>
+    <line x1="459" y1="419" x2="450" y2="410"/>
+  </g>
+  <path d="M340 118 L354 272 L340 258 L326 272 Z" fill="url(#goldMain)"/>
+  <path d="M340 482 L354 328 L340 342 L326 328 Z" fill="url(#goldDim)"/>
+  <path d="M522 300 L368 314 L382 300 L368 286 Z" fill="url(#goldDim)"/>
+  <path d="M158 300 L312 314 L298 300 L312 286 Z" fill="url(#goldMain)"/>
+  <path d="M459 181 L361 279 L349 267 L363 253 Z" fill="#d4b87a" fill-opacity="0.5"/>
+  <path d="M221 419 L319 321 L331 333 L317 347 Z" fill="#d4b87a" fill-opacity="0.5"/>
+  <path d="M221 181 L319 279 L331 267 L317 253 Z" fill="#d4b87a" fill-opacity="0.35"/>
+  <path d="M459 419 L361 321 L349 333 L363 347 Z" fill="#d4b87a" fill-opacity="0.35"/>
+  <circle cx="340" cy="300" r="12" fill="url(#goldMain)"/>
+  <circle cx="340" cy="300" r="5" fill="#0d0b09"/>
+  <path d="M172 390 Q280 170 508 210" fill="none" stroke="#d4b87a" stroke-width="1.2" stroke-opacity="0.3" stroke-dasharray="4 5"/>
+  <text x="340" y="568" text-anchor="middle" font-family="'Cormorant Garamond', 'Georgia', serif" font-size="68" font-weight="300" font-style="italic" letter-spacing="6" fill="url(#goldMain)">wander</text>
+  <line x1="124" y1="594" x2="224" y2="594" stroke="#d4b87a" stroke-width="0.6" stroke-opacity="0.35"/>
+  <line x1="456" y1="594" x2="556" y2="594" stroke="#d4b87a" stroke-width="0.6" stroke-opacity="0.35"/>
+  <text x="340" y="594" text-anchor="middle" font-family="'DM Sans', 'Helvetica Neue', sans-serif" font-size="16" font-weight="300" letter-spacing="5" fill="#d4b87a" fill-opacity="0.5">TRAVEL</text>
+</svg>

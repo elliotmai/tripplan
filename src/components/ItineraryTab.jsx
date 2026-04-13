@@ -1,12 +1,12 @@
 import { useState, useEffect } from 'react'
 import {
   collection, query, where, getDocs,
-  addDoc, deleteDoc, doc, orderBy, serverTimestamp
+  addDoc, updateDoc, deleteDoc, doc, orderBy, serverTimestamp
 } from 'firebase/firestore'
 import { db } from '../lib/firebase'
 import { fetchWeatherForTrip } from '../lib/weather'
-import { format, parseISO } from 'date-fns'
-import { Plus, Clock, MapPin, Trash2, ChevronDown, ArrowRight } from 'lucide-react'
+import { format } from 'date-fns'
+import { Plus, Clock, MapPin, Trash2, ChevronDown, ArrowRight, Pencil, X, Check } from 'lucide-react'
 
 // ─── constants ────────────────────────────────────────────────────────────────
 
@@ -30,67 +30,11 @@ const TRANSPORT_META = {
   other: { icon: '🛸', color: '#9a8ab5' },
 }
 
-// ─── Build per-date travel cards from multi-leg details ───────────────────────
-
-function buildTravelByDate(travelDetails, members) {
-  const byDate = {}
-
-  function push(dateStr, card) {
-    if (!dateStr) return
-    if (!byDate[dateStr]) byDate[dateStr] = []
-    byDate[dateStr].push(card)
-  }
-
-  travelDetails.forEach(detail => {
-    const member = members.find(m => m.id === detail.user_id)
-    const name = member?.full_name?.split(' ')[0] || 'Someone'
-    const legs = detail.legs || []
-
-    legs.forEach((leg, legIdx) => {
-      const meta = TRANSPORT_META[leg.transport] || TRANSPORT_META.other
-
-      const depDate = leg.depart_at?.slice(0, 10)
-      const arrDate = leg.arrive_at?.slice(0, 10)
-      const sameDay = depDate && arrDate && depDate === arrDate
-
-      if (leg.depart_at) {
-        push(depDate, {
-          kind: 'depart',
-          name,
-          userId: detail.user_id,
-          legIdx,
-          transport: leg.transport,
-          number: leg.number,
-          from: leg.from,
-          to: leg.to,
-          depart_time: formatTime(leg.depart_at),
-          // Show arrive time on the same card when both are on the same day
-          arrive_time: sameDay ? formatTime(leg.arrive_at) : null,
-          meta,
-        })
-      }
-
-      // Arrival card only needed on a different date (otherwise already shown on depart card)
-      if (leg.arrive_at && !sameDay) {
-        push(arrDate, {
-          kind: 'arrive',
-          name,
-          userId: detail.user_id,
-          legIdx,
-          transport: leg.transport,
-          number: leg.number,
-          from: leg.from,
-          to: leg.to,
-          depart_time: depDate ? null : formatTime(leg.depart_at), // only if no depart card exists
-          arrive_time: formatTime(leg.arrive_at),
-          meta,
-        })
-      }
-    })
-  })
-
-  return byDate
+const BLANK_FORM = {
+  title: '', time: '', end_time: '', location: '', notes: '', type: 'activity', assigned_to: ''
 }
+
+// ─── helpers ──────────────────────────────────────────────────────────────────
 
 function formatTime(dt) {
   if (!dt) return null
@@ -99,16 +43,61 @@ function formatTime(dt) {
   } catch { return null }
 }
 
+function formatTimeRange(start, end) {
+  if (!start) return null
+  const s = start.slice(0, 5)
+  if (!end) return s
+  const e = end.slice(0, 5)
+  try {
+    const fmt = t => {
+      const [h, m] = t.split(':').map(Number)
+      const d = new Date(2000, 0, 1, h, m)
+      return d.toLocaleTimeString('en-US', { hour: 'numeric', minute: m === 0 ? undefined : '2-digit' })
+    }
+    return `${fmt(s)} – ${fmt(e)}`
+  } catch {
+    return `${s} – ${e}`
+  }
+}
+
+// ─── Build per-date travel cards ──────────────────────────────────────────────
+
+function buildTravelByDate(travelDetails, members) {
+  const byDate = {}
+  function push(dateStr, card) {
+    if (!dateStr) return
+    if (!byDate[dateStr]) byDate[dateStr] = []
+    byDate[dateStr].push(card)
+  }
+  travelDetails.forEach(detail => {
+    const member = members.find(m => m.id === detail.user_id)
+    const name = member?.full_name?.split(' ')[0] || 'Someone'
+      ; (detail.legs || []).forEach(leg => {
+        const meta = TRANSPORT_META[leg.transport] || TRANSPORT_META.other
+        const depDate = leg.depart_at?.slice(0, 10)
+        const arrDate = leg.arrive_at?.slice(0, 10)
+        const sameDay = depDate && arrDate && depDate === arrDate
+        if (leg.depart_at) {
+          push(depDate, { kind: 'depart', name, transport: leg.transport, number: leg.number, from: leg.from, to: leg.to, depart_time: formatTime(leg.depart_at), arrive_time: sameDay ? formatTime(leg.arrive_at) : null, meta })
+        }
+        if (leg.arrive_at && !sameDay) {
+          push(arrDate, { kind: 'arrive', name, transport: leg.transport, number: leg.number, from: leg.from, to: leg.to, depart_time: null, arrive_time: formatTime(leg.arrive_at), meta })
+        }
+      })
+  })
+  return byDate
+}
+
 // ─── Main component ───────────────────────────────────────────────────────────
 
 export default function ItineraryTab({ tripId, trip, days, members, travelDetails = [], currentUser }) {
   const [events, setEvents] = useState([])
   const [weather, setWeather] = useState([])
   const [expandedDay, setExpandedDay] = useState(0)
-  const [showAddForm, setShowAddForm] = useState(null)
-  const [form, setForm] = useState({
-    title: '', time: '', location: '', notes: '', type: 'activity', assigned_to: ''
-  })
+  const [showAddForm, setShowAddForm] = useState(null)   // dateStr | null
+  const [addForm, setAddForm] = useState(BLANK_FORM)
+  const [editingId, setEditingId] = useState(null)   // event id | null
+  const [editForm, setEditForm] = useState(BLANK_FORM)
   const [saving, setSaving] = useState(false)
 
   const travelByDate = buildTravelByDate(travelDetails, members)
@@ -130,29 +119,63 @@ export default function ItineraryTab({ tripId, trip, days, members, travelDetail
   }
 
   async function addEvent(date) {
-    if (!form.title.trim()) return
+    if (!addForm.title.trim()) return
     setSaving(true)
     await addDoc(collection(db, 'itinerary_events'), {
       trip_id: tripId,
       date,
-      title: form.title,
-      time: form.time || null,
-      location: form.location || null,
-      notes: form.notes || null,
-      type: form.type,
-      assigned_to: form.assigned_to || null,
+      title: addForm.title,
+      time: addForm.time || null,
+      end_time: addForm.end_time || null,
+      location: addForm.location || null,
+      notes: addForm.notes || null,
+      type: addForm.type,
+      assigned_to: addForm.assigned_to || null,
       created_by: currentUser.id,
       created_at: serverTimestamp(),
     })
-    setForm({ title: '', time: '', location: '', notes: '', type: 'activity', assigned_to: '' })
+    setAddForm(BLANK_FORM)
     setShowAddForm(null)
     setSaving(false)
     loadEvents()
   }
 
+  async function saveEdit(id) {
+    if (!editForm.title.trim()) return
+    setSaving(true)
+    await updateDoc(doc(db, 'itinerary_events', id), {
+      title: editForm.title,
+      time: editForm.time || null,
+      end_time: editForm.end_time || null,
+      location: editForm.location || null,
+      notes: editForm.notes || null,
+      type: editForm.type,
+      assigned_to: editForm.assigned_to || null,
+      updated_at: serverTimestamp(),
+    })
+    setSaving(false)
+    setEditingId(null)
+    loadEvents()
+  }
+
   async function deleteEvent(id) {
     await deleteDoc(doc(db, 'itinerary_events', id))
+    if (editingId === id) setEditingId(null)
     loadEvents()
+  }
+
+  function startEdit(event) {
+    setEditForm({
+      title: event.title || '',
+      time: event.time || '',
+      end_time: event.end_time || '',
+      location: event.location || '',
+      notes: event.notes || '',
+      type: event.type || 'activity',
+      assigned_to: event.assigned_to || '',
+    })
+    setEditingId(event.id)
+    setShowAddForm(null)
   }
 
   return (
@@ -191,9 +214,17 @@ export default function ItineraryTab({ tripId, trip, days, members, travelDetail
                 <div>
                   <p className="text-xs font-medium" style={{ color: '#d4cfc8' }}>Day {idx + 1}</p>
                   <div className="flex items-center gap-2 mt-0.5 flex-wrap">
+                    {dayWeather && (
+                      <span className="flex items-center gap-1 text-xs" style={{ color: '#5a5248' }}>
+                        <span>{dayWeather.icon}</span>
+                        <span style={{ color: '#b5aea4' }}>{dayWeather.maxTemp}°</span>
+                        <span>/</span>
+                        <span>{dayWeather.minTemp}°</span>
+                      </span>
+                    )}
                     {dayEvents.length > 0 && (
                       <span className="text-xs" style={{ color: '#5a5248' }}>
-                        {dayEvents.length} event{dayEvents.length !== 1 ? 's' : ''}
+                        · {dayEvents.length} event{dayEvents.length !== 1 ? 's' : ''}
                       </span>
                     )}
                     {dayTravel.length > 0 && (
@@ -202,7 +233,7 @@ export default function ItineraryTab({ tripId, trip, days, members, travelDetail
                         {[...new Set(dayTravel.map(t => t.meta.icon))].join('')} {dayTravel.length} travel
                       </span>
                     )}
-                    {totalItems === 0 && (
+                    {totalItems === 0 && !dayWeather && (
                       <span className="text-xs" style={{ color: '#3d3830' }}>Empty</span>
                     )}
                   </div>
@@ -212,17 +243,16 @@ export default function ItineraryTab({ tripId, trip, days, members, travelDetail
               <div className="flex items-center gap-3">
                 {dayWeather && (
                   <div className="flex flex-col items-end">
-                    <div className="flex items-center gap-1">
-                      <span className="text-base">{dayWeather.icon}</span>
-                      <span className="text-sm font-medium" style={{ color: '#d4cfc8' }}>{dayWeather.maxTemp}°</span>
-                    </div>
-                    <span className="text-xs" style={{ color: '#5a5248' }}>{dayWeather.minTemp}° low</span>
+                    <span className="text-xs" style={{ color: '#5a5248' }}>{dayWeather.label}</span>
+                    {dayWeather.precipProb > 20 && (
+                      <span className="text-xs" style={{ color: '#7a9ab5' }}>💧{dayWeather.precipProb}%</span>
+                    )}
                   </div>
                 )}
                 <ChevronDown size={14} style={{
                   color: '#5a5248',
                   transform: isOpen ? 'rotate(180deg)' : 'none',
-                  transition: 'transform 0.2s'
+                  transition: 'transform 0.2s',
                 }} />
               </div>
             </button>
@@ -246,7 +276,7 @@ export default function ItineraryTab({ tripId, trip, days, members, travelDetail
                   </div>
                 )}
 
-                {/* Travel leg cards */}
+                {/* Travel cards */}
                 {dayTravel.length > 0 && (
                   <div className="space-y-1.5">
                     <p className="text-xs tracking-widest uppercase px-1 pt-1" style={{ color: '#5a5248' }}>Travel</p>
@@ -260,10 +290,28 @@ export default function ItineraryTab({ tripId, trip, days, members, travelDetail
                     {dayTravel.length > 0 && (
                       <p className="text-xs tracking-widest uppercase px-1 pt-1" style={{ color: '#5a5248' }}>Events</p>
                     )}
-                    {dayEvents.map(event => (
-                      <EventItem key={event.id} event={event} members={members}
-                        onDelete={deleteEvent} currentUser={currentUser} />
-                    ))}
+                    {dayEvents.map(event =>
+                      editingId === event.id ? (
+                        <EventEditForm
+                          key={event.id}
+                          form={editForm}
+                          setForm={setEditForm}
+                          members={members}
+                          saving={saving}
+                          onSave={() => saveEdit(event.id)}
+                          onCancel={() => setEditingId(null)}
+                        />
+                      ) : (
+                        <EventItem
+                          key={event.id}
+                          event={event}
+                          members={members}
+                          onEdit={() => startEdit(event)}
+                          onDelete={() => deleteEvent(event.id)}
+                          canEdit={event.created_by === currentUser.id}
+                        />
+                      )
+                    )}
                   </div>
                 )}
 
@@ -271,57 +319,19 @@ export default function ItineraryTab({ tripId, trip, days, members, travelDetail
                   <p className="text-xs text-center py-3" style={{ color: '#3d3830' }}>No events yet.</p>
                 )}
 
-                {/* Add event form */}
+                {/* Add form */}
                 {showAddForm === dateStr ? (
-                  <div className="rounded-xl p-4 space-y-3 mt-2"
-                    style={{ background: 'rgba(212,184,122,0.06)', border: '1px solid rgba(212,184,122,0.15)' }}>
-                    <input autoFocus placeholder="Event title *" value={form.title}
-                      onChange={e => setForm({ ...form, title: e.target.value })}
-                      className="w-full bg-transparent text-sm outline-none"
-                      style={{ color: '#e8d5a3', borderBottom: '1px solid rgba(212,184,122,0.2)', paddingBottom: '8px' }} />
-                    <div className="grid grid-cols-2 gap-3">
-                      <input type="time" value={form.time} onChange={e => setForm({ ...form, time: e.target.value })}
-                        className="bg-transparent text-xs outline-none"
-                        style={{ color: '#b5aea4', borderBottom: '1px solid rgba(255,255,255,0.08)', paddingBottom: '6px' }} />
-                      <select value={form.type} onChange={e => setForm({ ...form, type: e.target.value })}
-                        className="bg-transparent text-xs outline-none"
-                        style={{ color: '#b5aea4', borderBottom: '1px solid rgba(255,255,255,0.08)', paddingBottom: '6px', background: 'transparent' }}>
-                        {EVENT_TYPES.map(t => (
-                          <option key={t.value} value={t.value} style={{ background: '#1c1916' }}>{t.label}</option>
-                        ))}
-                      </select>
-                    </div>
-                    <input placeholder="Location (optional)" value={form.location}
-                      onChange={e => setForm({ ...form, location: e.target.value })}
-                      className="w-full bg-transparent text-xs outline-none"
-                      style={{ color: '#b5aea4', borderBottom: '1px solid rgba(255,255,255,0.08)', paddingBottom: '6px' }} />
-                    <select value={form.assigned_to} onChange={e => setForm({ ...form, assigned_to: e.target.value })}
-                      className="w-full text-xs outline-none"
-                      style={{ color: '#b5aea4', borderBottom: '1px solid rgba(255,255,255,0.08)', paddingBottom: '6px', background: 'transparent' }}>
-                      <option value="" style={{ background: '#1c1916' }}>Assign to… (optional)</option>
-                      {members.map(m => (
-                        <option key={m.id} value={m.id} style={{ background: '#1c1916' }}>{m.full_name}</option>
-                      ))}
-                    </select>
-                    <textarea placeholder="Notes (optional)" value={form.notes}
-                      onChange={e => setForm({ ...form, notes: e.target.value })}
-                      rows={2} className="w-full bg-transparent text-xs outline-none resize-none"
-                      style={{ color: '#b5aea4', borderBottom: '1px solid rgba(255,255,255,0.08)', paddingBottom: '6px' }} />
-                    <div className="flex gap-2 pt-1">
-                      <button onClick={() => addEvent(dateStr)} disabled={saving || !form.title.trim()}
-                        className="flex-1 py-2 rounded-xl text-xs font-medium"
-                        style={{ background: 'linear-gradient(135deg, #d4b87a 0%, #c19a4e 100%)', color: '#0a0908' }}>
-                        {saving ? 'Saving…' : 'Add Event'}
-                      </button>
-                      <button onClick={() => setShowAddForm(null)}
-                        className="px-4 py-2 rounded-xl text-xs"
-                        style={{ color: '#5a5248', background: 'rgba(255,255,255,0.04)' }}>
-                        Cancel
-                      </button>
-                    </div>
-                  </div>
+                  <EventAddForm
+                    form={addForm}
+                    setForm={setAddForm}
+                    members={members}
+                    saving={saving}
+                    onSave={() => addEvent(dateStr)}
+                    onCancel={() => { setShowAddForm(null); setAddForm(BLANK_FORM) }}
+                  />
                 ) : (
-                  <button onClick={() => setShowAddForm(dateStr)}
+                  <button
+                    onClick={() => { setShowAddForm(dateStr); setEditingId(null) }}
                     className="w-full flex items-center justify-center gap-2 py-3 rounded-xl text-xs mt-1 transition-all"
                     style={{ color: '#5a5248', border: '1px dashed rgba(212,184,122,0.2)' }}>
                     <Plus size={12} />Add event
@@ -336,112 +346,148 @@ export default function ItineraryTab({ tripId, trip, days, members, travelDetail
   )
 }
 
-// ─── Travel card (itinerary view) ─────────────────────────────────────────────
+// ─── Shared form fields ───────────────────────────────────────────────────────
 
-function TravelCard({ card }) {
-  const isArrive = card.kind === 'arrive'
-  const c = card.meta.color
-  const hasRoute = card.from || card.to
-
+function EventFormFields({ form, setForm, members }) {
   return (
-    <div className="px-3 py-2.5 rounded-xl"
-      style={{ background: `${c}12`, border: `1px solid ${c}28` }}>
-
-      {/* Top row: icon · name · number · label */}
-      <div className="flex items-center gap-2">
-        <span className="text-base flex-shrink-0">{card.meta.icon}</span>
-        <span className="text-xs font-medium flex-1 min-w-0 truncate" style={{ color: '#d4cfc8' }}>
-          {card.name}
-        </span>
-        {card.number && (
-          <span className="text-xs px-1.5 py-0.5 rounded font-mono flex-shrink-0"
-            style={{ background: 'rgba(255,255,255,0.06)', color: '#b5aea4' }}>
-            {card.number}
-          </span>
-        )}
-        {/* <span className="text-xs font-medium flex-shrink-0" style={{ color: c }}>
-          {isArrive ? 'Arriving' : 'Departing'}
-        </span> */}
+    <>
+      <input
+        autoFocus
+        placeholder="Event title *"
+        value={form.title}
+        onChange={e => setForm({ ...form, title: e.target.value })}
+        className="w-full bg-transparent text-sm outline-none"
+        style={{ color: '#e8d5a3', borderBottom: '1px solid rgba(212,184,122,0.2)', paddingBottom: '8px' }}
+      />
+      <div className="grid grid-cols-3 gap-3">
+        <div>
+          <p className="text-xs mb-1" style={{ color: '#5a5248' }}>Start time</p>
+          <input type="time" value={form.time}
+            onChange={e => setForm({ ...form, time: e.target.value })}
+            className="w-full bg-transparent text-xs outline-none"
+            style={{ color: '#b5aea4', borderBottom: '1px solid rgba(255,255,255,0.08)', paddingBottom: '6px' }} />
+        </div>
+        <div>
+          <p className="text-xs mb-1" style={{ color: '#5a5248' }}>End time</p>
+          <input type="time" value={form.end_time}
+            onChange={e => setForm({ ...form, end_time: e.target.value })}
+            className="w-full bg-transparent text-xs outline-none"
+            style={{ color: '#b5aea4', borderBottom: '1px solid rgba(255,255,255,0.08)', paddingBottom: '6px' }} />
+        </div>
+        <div>
+          <p className="text-xs mb-1" style={{ color: '#5a5248' }}>Type</p>
+          <select value={form.type}
+            onChange={e => setForm({ ...form, type: e.target.value })}
+            className="w-full bg-transparent text-xs outline-none"
+            style={{ color: '#b5aea4', borderBottom: '1px solid rgba(255,255,255,0.08)', paddingBottom: '6px', background: 'transparent' }}>
+            {EVENT_TYPES.map(t => (
+              <option key={t.value} value={t.value} style={{ background: '#1c1916' }}>{t.label}</option>
+            ))}
+          </select>
+        </div>
       </div>
+      <input placeholder="Location (optional)" value={form.location}
+        onChange={e => setForm({ ...form, location: e.target.value })}
+        className="w-full bg-transparent text-xs outline-none"
+        style={{ color: '#b5aea4', borderBottom: '1px solid rgba(255,255,255,0.08)', paddingBottom: '6px' }} />
+      <select value={form.assigned_to}
+        onChange={e => setForm({ ...form, assigned_to: e.target.value })}
+        className="w-full text-xs outline-none"
+        style={{ color: '#b5aea4', borderBottom: '1px solid rgba(255,255,255,0.08)', paddingBottom: '6px', background: 'transparent' }}>
+        <option value="" style={{ background: '#1c1916' }}>Assign to… (optional)</option>
+        {members.map(m => (
+          <option key={m.id} value={m.id} style={{ background: '#1c1916' }}>{m.full_name}</option>
+        ))}
+      </select>
+      <textarea placeholder="Notes (optional)" value={form.notes}
+        onChange={e => setForm({ ...form, notes: e.target.value })}
+        rows={2} className="w-full bg-transparent text-xs outline-none resize-none"
+        style={{ color: '#b5aea4', borderBottom: '1px solid rgba(255,255,255,0.08)', paddingBottom: '6px' }} />
+    </>
+  )
+}
 
-      {/* Route row: from [depart time] → to [arrive time] */}
-      {hasRoute && (
-        <div className="flex items-start gap-2 mt-2 ml-6">
-          {/* Origin + depart time */}
-          <div className="flex-1 min-w-0">
-            <p className="text-xs font-medium truncate" style={{ color: '#b5aea4' }}>
-              {card.from || '—'}
-            </p>
-            {card.depart_time && (
-              <p className="text-xs flex items-center gap-1 mt-0.5" style={{ color: '#5a5248' }}>
-                <Clock size={8} />{card.depart_time}
-              </p>
-            )}
-          </div>
-
-          <ArrowRight size={10} style={{ color: '#3d3830', flexShrink: 0, marginTop: 2 }} />
-
-          {/* Destination + arrive time */}
-          <div className="flex-1 min-w-0 text-right">
-            <p className="text-xs font-medium truncate" style={{ color: '#b5aea4' }}>
-              {card.to || '—'}
-            </p>
-            {card.arrive_time && (
-              <p className="text-xs flex items-center justify-end gap-1 mt-0.5" style={{ color: '#5a5248' }}>
-                <Clock size={8} />{card.arrive_time}
-              </p>
-            )}
-          </div>
-        </div>
-      )}
-
-      {/* Fallback when no route but we have times */}
-      {!hasRoute && (card.depart_time || card.arrive_time) && (
-        <div className="flex items-center gap-2 mt-1 ml-6">
-          {card.depart_time && (
-            <span className="flex items-center gap-1 text-xs" style={{ color: '#5a5248' }}>
-              <Clock size={8} />{card.depart_time}
-            </span>
-          )}
-          {card.depart_time && card.arrive_time && (
-            <ArrowRight size={8} style={{ color: '#3d3830' }} />
-          )}
-          {card.arrive_time && (
-            <span className="flex items-center gap-1 text-xs" style={{ color: '#5a5248' }}>
-              <Clock size={8} />{card.arrive_time}
-            </span>
-          )}
-        </div>
-      )}
+function EventAddForm({ form, setForm, members, saving, onSave, onCancel }) {
+  return (
+    <div className="rounded-xl p-4 space-y-3 mt-2"
+      style={{ background: 'rgba(212,184,122,0.06)', border: '1px solid rgba(212,184,122,0.15)' }}>
+      <EventFormFields form={form} setForm={setForm} members={members} />
+      <div className="flex gap-2 pt-1">
+        <button onClick={onSave} disabled={saving || !form.title.trim()}
+          className="flex-1 py-2 rounded-xl text-xs font-medium"
+          style={{ background: 'linear-gradient(135deg, #d4b87a 0%, #c19a4e 100%)', color: '#0a0908' }}>
+          {saving ? 'Saving…' : 'Add Event'}
+        </button>
+        <button onClick={onCancel} className="px-4 py-2 rounded-xl text-xs"
+          style={{ color: '#5a5248', background: 'rgba(255,255,255,0.04)' }}>
+          Cancel
+        </button>
+      </div>
     </div>
   )
 }
 
-// ─── Itinerary event row ──────────────────────────────────────────────────────
+function EventEditForm({ form, setForm, members, saving, onSave, onCancel }) {
+  return (
+    <div className="rounded-xl p-4 space-y-3 slide-up"
+      style={{ background: 'rgba(122,154,181,0.06)', border: '1px solid rgba(122,154,181,0.2)' }}>
+      <div className="flex items-center justify-between mb-1">
+        <p className="text-xs tracking-widest uppercase" style={{ color: '#7a9ab5' }}>Edit Event</p>
+        <button onClick={onCancel} style={{ color: '#5a5248' }}><X size={12} /></button>
+      </div>
+      <EventFormFields form={form} setForm={setForm} members={members} />
+      <div className="flex gap-2 pt-1">
+        <button onClick={onSave} disabled={saving || !form.title.trim()}
+          className="flex-1 py-2 rounded-xl text-xs font-medium flex items-center justify-center gap-1.5"
+          style={{ background: saving ? '#3d3830' : 'linear-gradient(135deg, #d4b87a 0%, #c19a4e 100%)', color: '#0a0908' }}>
+          {saving ? 'Saving…' : <><Check size={11} />Save Changes</>}
+        </button>
+        <button onClick={onCancel} className="px-4 py-2 rounded-xl text-xs"
+          style={{ color: '#5a5248', background: 'rgba(255,255,255,0.04)' }}>
+          Cancel
+        </button>
+      </div>
+    </div>
+  )
+}
 
-function EventItem({ event, members, onDelete, currentUser }) {
+// ─── Event row (view mode) ────────────────────────────────────────────────────
+
+function EventItem({ event, members, onEdit, onDelete, canEdit }) {
   const typeInfo = EVENT_TYPES.find(t => t.value === event.type) || EVENT_TYPES[0]
   const assignee = members.find(m => m.id === event.assigned_to)
+  const timeLabel = formatTimeRange(event.time, event.end_time)
 
   return (
     <div className="flex items-start gap-3 px-3 py-3 rounded-xl group"
       style={{ background: 'rgba(255,255,255,0.03)' }}>
       <div className="w-1.5 h-1.5 rounded-full mt-2 flex-shrink-0" style={{ background: typeInfo.color }} />
       <div className="flex-1 min-w-0">
-        <div className="flex items-center justify-between gap-2">
-          <p className="text-sm font-medium truncate" style={{ color: '#d4cfc8' }}>{event.title}</p>
-          {event.created_by === currentUser.id && (
-            <button onClick={() => onDelete(event.id)}
-              className="opacity-0 group-hover:opacity-100 transition-opacity flex-shrink-0"
-              style={{ color: '#5a5248' }}>
-              <Trash2 size={12} />
-            </button>
+        <div className="flex items-start justify-between gap-2">
+          <p className="text-sm font-medium" style={{ color: '#d4cfc8' }}>{event.title}</p>
+          {canEdit && (
+            <div className="flex items-center gap-1 flex-shrink-0 opacity-0 group-hover:opacity-100 transition-opacity">
+              <button
+                onClick={onEdit}
+                className="w-6 h-6 rounded-lg flex items-center justify-center"
+                style={{ color: '#7a9ab5', background: 'rgba(122,154,181,0.1)' }}
+                title="Edit">
+                <Pencil size={10} />
+              </button>
+              <button
+                onClick={onDelete}
+                className="w-6 h-6 rounded-lg flex items-center justify-center"
+                style={{ color: '#c47c5a', background: 'rgba(196,124,90,0.1)' }}
+                title="Delete">
+                <Trash2 size={10} />
+              </button>
+            </div>
           )}
         </div>
         <div className="flex flex-wrap gap-x-3 gap-y-1 mt-1">
-          {event.time && (
+          {timeLabel && (
             <span className="flex items-center gap-1 text-xs" style={{ color: '#5a5248' }}>
-              <Clock size={9} />{event.time.slice(0, 5)}
+              <Clock size={9} />{timeLabel}
             </span>
           )}
           {event.location && (
@@ -458,6 +504,55 @@ function EventItem({ event, members, onDelete, currentUser }) {
         </div>
         {event.notes && <p className="text-xs mt-1" style={{ color: '#5a5248' }}>{event.notes}</p>}
       </div>
+    </div>
+  )
+}
+
+// ─── Travel card ──────────────────────────────────────────────────────────────
+
+function TravelCard({ card }) {
+  const c = card.meta.color
+  const hasRoute = card.from || card.to
+  return (
+    <div className="px-3 py-2.5 rounded-xl" style={{ background: `${c}12`, border: `1px solid ${c}28` }}>
+      <div className="flex items-center gap-2">
+        <span className="text-base flex-shrink-0">{card.meta.icon}</span>
+        <span className="text-xs font-medium flex-1 min-w-0 truncate" style={{ color: '#d4cfc8' }}>{card.name}</span>
+        {card.number && (
+          <span className="text-xs px-1.5 py-0.5 rounded font-mono flex-shrink-0"
+            style={{ background: 'rgba(255,255,255,0.06)', color: '#b5aea4' }}>
+            {card.number}
+          </span>
+        )}
+      </div>
+      {hasRoute && (
+        <div className="flex items-start gap-2 mt-2 ml-6">
+          <div className="flex-1 min-w-0">
+            <p className="text-xs font-medium truncate" style={{ color: '#b5aea4' }}>{card.from || '—'}</p>
+            {card.depart_time && (
+              <p className="text-xs flex items-center gap-1 mt-0.5" style={{ color: '#5a5248' }}>
+                <Clock size={8} />{card.depart_time}
+              </p>
+            )}
+          </div>
+          <ArrowRight size={10} style={{ color: '#3d3830', flexShrink: 0, marginTop: 2 }} />
+          <div className="flex-1 min-w-0 text-right">
+            <p className="text-xs font-medium truncate" style={{ color: '#b5aea4' }}>{card.to || '—'}</p>
+            {card.arrive_time && (
+              <p className="text-xs flex items-center justify-end gap-1 mt-0.5" style={{ color: '#5a5248' }}>
+                <Clock size={8} />{card.arrive_time}
+              </p>
+            )}
+          </div>
+        </div>
+      )}
+      {!hasRoute && (card.depart_time || card.arrive_time) && (
+        <div className="flex items-center gap-2 mt-1 ml-6">
+          {card.depart_time && <span className="flex items-center gap-1 text-xs" style={{ color: '#5a5248' }}><Clock size={8} />{card.depart_time}</span>}
+          {card.depart_time && card.arrive_time && <ArrowRight size={8} style={{ color: '#3d3830' }} />}
+          {card.arrive_time && <span className="flex items-center gap-1 text-xs" style={{ color: '#5a5248' }}><Clock size={8} />{card.arrive_time}</span>}
+        </div>
+      )}
     </div>
   )
 }

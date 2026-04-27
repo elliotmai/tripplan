@@ -1,9 +1,16 @@
 import {
-  doc, getDoc, setDoc, deleteDoc,
+  doc, getDoc, setDoc, deleteDoc, updateDoc,
   collection, query, where, getDocs,
   serverTimestamp,
 } from 'firebase/firestore'
 import { db } from './firebase'
+
+// Default filter when none is stored. `traveler_ids: null` means "all travelers".
+export const DEFAULT_FEED_FILTER = {
+  traveler_ids: null,
+  include_transport_events: true,
+  only_my_events: false,
+}
 
 // The Cloud Function base URL — set this after deploying.
 // It will look like: https://REGION-PROJECT.cloudfunctions.net
@@ -42,12 +49,18 @@ export async function getOrCreateFeedTokens(tripId, userId) {
   })
 
   const result = {}
+  // Inherit filter from any existing token so all three stay in sync.
+  let filter = null
+  for (const t of ['combined', 'travel', 'itinerary']) {
+    if (existing[t]?.filter) { filter = existing[t].filter; break }
+  }
 
   for (const type of ['itinerary', 'travel', 'combined']) {
     if (existing[type]) {
       result[type] = {
         token: existing[type].token,
         url:   feedUrl(existing[type].token, type),
+        filter: existing[type].filter || filter || { ...DEFAULT_FEED_FILTER },
       }
     } else {
       const token = randomToken()
@@ -55,13 +68,28 @@ export async function getOrCreateFeedTokens(tripId, userId) {
         trip_id:    tripId,
         created_by: userId,
         type,
+        filter: filter || { ...DEFAULT_FEED_FILTER },
         created_at: serverTimestamp(),
       })
-      result[type] = { token, url: feedUrl(token, type) }
+      result[type] = { token, url: feedUrl(token, type), filter: filter || { ...DEFAULT_FEED_FILTER } }
     }
   }
 
   return result
+}
+
+// Update the filter on all of a user's tokens for a trip, so all 3 feed types
+// stay in sync. Returns the updated filter object.
+export async function updateFeedFilter(tripId, userId, filter) {
+  const snap = await getDocs(
+    query(
+      collection(db, 'calendar_tokens'),
+      where('trip_id', '==', tripId),
+      where('created_by', '==', userId)
+    )
+  )
+  await Promise.all(snap.docs.map(d => updateDoc(d.ref, { filter })))
+  return filter
 }
 
 // Revoke all feed tokens for a trip (call when trip is deleted, or user wants to cut access)

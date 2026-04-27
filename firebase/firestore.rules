@@ -26,13 +26,27 @@ service cloud.firestore {
                             && resource.data.created_by == request.auth.uid;
     }
 
-    // TRAVEL DETAILS
+    // TRAVEL DETAILS (legacy per-user)
     match /travel_details/{detailId} {
       allow read:   if request.auth != null;
       allow create: if request.auth != null
                     && request.resource.data.user_id == request.auth.uid;
       allow update: if request.auth != null
                     && resource.data.user_id == request.auth.uid;
+    }
+
+    // TRIP LEGS (shared, multi-traveler)
+    match /trip_legs/{legId} {
+      allow read, create:   if request.auth != null;
+      allow update, delete: if request.auth != null
+                            && resource.data.created_by == request.auth.uid;
+    }
+
+    // TRIP ACCOMMODATIONS (shared, multi-traveler, multiple per traveler)
+    match /trip_accommodations/{accomId} {
+      allow read, create:   if request.auth != null;
+      allow update, delete: if request.auth != null
+                            && resource.data.created_by == request.auth.uid;
     }
 
     // POLLS
@@ -58,9 +72,9 @@ service cloud.firestore {
 
     // PHOTO ALBUMS
     match /photo_albums/{albumId} {
-      allow read, create: if request.auth != null;
-      allow delete:       if request.auth != null
-                          && resource.data.added_by == request.auth.uid;
+      allow read, create:   if request.auth != null;
+      allow update, delete: if request.auth != null
+                            && resource.data.added_by == request.auth.uid;
     }
 
     // CALENDAR TOKENS

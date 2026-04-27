@@ -6,6 +6,7 @@ import {
 import { db } from '../lib/firebase'
 import { fetchWeatherForTrip } from '../lib/weather'
 import { downloadICS, downloadCombinedICS } from '../lib/ical'
+import { normalizeLegs, normalizeAccommodations } from '../lib/travel'
 import { format } from 'date-fns'
 import {
   Plus, Clock, MapPin, Trash2, ChevronDown, ArrowRight,
@@ -94,29 +95,32 @@ function serializeAssigned(assignAll, assignees, allMemberIds) {
 }
 
 // ─── Build per-date travel cards ──────────────────────────────────────────────
+// Takes the unified legs array (from normalizeLegs) — each entry already carries
+// traveler_names so we don't need to look anything up.
 
-function buildTravelByDate(travelDetails, members) {
+function buildTravelByDate(legs) {
   const byDate = {}
   function push(dateStr, card) {
     if (!dateStr) return
     if (!byDate[dateStr]) byDate[dateStr] = []
     byDate[dateStr].push(card)
   }
-  travelDetails.forEach(detail => {
-    const member = members.find(m => m.id === detail.user_id)
-    const name = member?.full_name?.split(' ')[0] || 'Someone'
-      ; (detail.legs || []).forEach(leg => {
-        const meta = TRANSPORT_META[leg.transport] || TRANSPORT_META.other
-        const depDate = leg.depart_at?.slice(0, 10)
-        const arrDate = leg.arrive_at?.slice(0, 10)
-        const sameDay = depDate && arrDate && depDate === arrDate
-        if (leg.depart_at) {
-          push(depDate, { kind: 'depart', name, transport: leg.transport, number: leg.number, from: leg.from, to: leg.to, depart_time: formatTime(leg.depart_at), arrive_time: sameDay ? formatTime(leg.arrive_at) : null, meta })
-        }
-        if (leg.arrive_at && !sameDay) {
-          push(arrDate, { kind: 'arrive', name, transport: leg.transport, number: leg.number, from: leg.from, to: leg.to, depart_time: null, arrive_time: formatTime(leg.arrive_at), meta })
-        }
-      })
+  legs.forEach(leg => {
+    const firstNames = (leg.traveler_names || []).map(n => n.split(' ')[0])
+    const name = firstNames.length === 0 ? 'Someone'
+                : firstNames.length === 1 ? firstNames[0]
+                : firstNames.length === 2 ? firstNames.join(' & ')
+                : `${firstNames[0]} +${firstNames.length - 1}`
+    const meta = TRANSPORT_META[leg.transport] || TRANSPORT_META.other
+    const depDate = leg.depart_at?.slice(0, 10)
+    const arrDate = leg.arrive_at?.slice(0, 10)
+    const sameDay = depDate && arrDate && depDate === arrDate
+    if (leg.depart_at) {
+      push(depDate, { kind: 'depart', name, transport: leg.transport, number: leg.number, from: leg.from, to: leg.to, depart_time: formatTime(leg.depart_at), arrive_time: sameDay ? formatTime(leg.arrive_at) : null, meta })
+    }
+    if (leg.arrive_at && !sameDay) {
+      push(arrDate, { kind: 'arrive', name, transport: leg.transport, number: leg.number, from: leg.from, to: leg.to, depart_time: null, arrive_time: formatTime(leg.arrive_at), meta })
+    }
   })
   return byDate
 }
@@ -418,7 +422,7 @@ function EventItem({ event, members, onEdit, onDelete, canEdit }) {
 
 // ─── Export modal ─────────────────────────────────────────────────────────────
 
-function ExportModal({ events, members, travelDetails, trip, scope, onClose }) {
+function ExportModal({ events, members, allLegs, allAccoms, trip, scope, onClose }) {
   const scopeEvents = scope === 'all' ? events : events.filter(e => e.date === scope)
   const usedTypes = [...new Set(scopeEvents.map(e => e.type))]
   const allMemberIds = members.map(m => m.id)
@@ -438,9 +442,8 @@ function ExportModal({ events, members, travelDetails, trip, scope, onClose }) {
   const [selPeople, setSelPeople] = useState(new Set(['__unassigned__', ...usedAssigneeIds]))
   const [exported, setExported] = useState(null)  // null | 'itinerary' | 'combined'
 
-  // Members who have travel details
-  const travelMemberIds = travelDetails.map(d => d.user_id)
-  const hasTravelData = scope === 'all' && travelMemberIds.length > 0
+  // Trip-level export only includes travel data
+  const hasTravelData = scope === 'all' && (allLegs.length > 0 || allAccoms.length > 0)
 
   function toggleType(v) {
     setSelTypes(prev => { const n = new Set(prev); n.has(v) ? n.delete(v) : n.add(v); return n })
@@ -464,7 +467,7 @@ function ExportModal({ events, members, travelDetails, trip, scope, onClose }) {
       : `${trip.name} – ${format(new Date(scope + 'T12:00:00'), 'MMM d')}`
 
     if (type === 'combined') {
-      downloadCombinedICS(filtered, travelDetails, members, travelMemberIds, trip)
+      downloadCombinedICS({ events: filtered, legs: allLegs, accommodations: allAccoms, trip })
     } else {
       downloadICS(filtered, label, trip)
     }
@@ -640,7 +643,11 @@ function ExportModal({ events, members, travelDetails, trip, scope, onClose }) {
 
 // ─── Main component ───────────────────────────────────────────────────────────
 
-export default function ItineraryTab({ tripId, trip, days, members, travelDetails = [], currentUser }) {
+export default function ItineraryTab({
+  tripId, trip, days, members,
+  travelDetails = [], sharedLegs = [], sharedAccoms = [],
+  currentUser,
+}) {
   const [events, setEvents] = useState([])
   const [weather, setWeather] = useState([])
   const [expandedDay, setExpandedDay] = useState(0)
@@ -651,7 +658,9 @@ export default function ItineraryTab({ tripId, trip, days, members, travelDetail
   const [saving, setSaving] = useState(false)
   const [exportScope, setExportScope] = useState(null)
 
-  const travelByDate = buildTravelByDate(travelDetails, members)
+  const allLegs   = normalizeLegs({ legacyDetails: travelDetails, sharedLegs, members })
+  const allAccoms = normalizeAccommodations({ legacyDetails: travelDetails, sharedAccoms, members })
+  const travelByDate = buildTravelByDate(allLegs)
   const allMemberIds = members.map(m => m.id)
 
   useEffect(() => {
@@ -924,7 +933,8 @@ export default function ItineraryTab({ tripId, trip, days, members, travelDetail
         <ExportModal
           events={events}
           members={members}
-          travelDetails={travelDetails}
+          allLegs={allLegs}
+          allAccoms={allAccoms}
           trip={trip}
           scope={exportScope}
           onClose={() => setExportScope(null)}

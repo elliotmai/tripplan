@@ -263,13 +263,23 @@ function eventLines(event, tripTimezone) {
 const TRANSPORT_LABELS = { flight:'Flight', train:'Train', bus:'Bus', car:'Car', ferry:'Ferry', subway:'Subway', taxi:'Taxi', walk:'Walk', other:'Journey' }
 const TRANSPORT_ICONS  = { flight:'✈️', train:'🚂', bus:'🚌', car:'🚗', ferry:'⛴️', subway:'🚇', taxi:'🚕', walk:'🚶', other:'🛸' }
 
-function legLines(leg, legIdx, userId, memberName) {
+function shortWho(names) {
+  const firstNames = names.map(n => n.split(' ')[0])
+  if (firstNames.length === 0) return 'Traveler'
+  if (firstNames.length === 1) return firstNames[0]
+  if (firstNames.length === 2) return firstNames.join(' & ')
+  return `${firstNames[0]} +${firstNames.length - 1}`
+}
+
+// `leg` is normalized: { transport, number, from, to, depart_at, arrive_at,
+// depart_tz, arrive_tz, notes, traveler_names, _source, _docId | _legacyDocId, _legacyIdx }
+function legLines(leg) {
   const icon      = TRANSPORT_ICONS[leg.transport] || '🛸'
   const label     = TRANSPORT_LABELS[leg.transport] || 'Journey'
-  const firstName = memberName.split(' ')[0]
   const ref       = leg.number || label
   const route     = [leg.from, leg.to].filter(Boolean).join(' → ')
-  const summary   = `${icon} ${ref} · ${firstName}${route ? ': ' + route : ''}`
+  const names     = leg.traveler_names || []
+  const summary   = `${icon} ${ref} · ${shortWho(names)}${route ? ': ' + route : ''}`
 
   const departTZ = leg.depart_tz || 'UTC'
   const arriveTZ = leg.arrive_tz || leg.depart_tz || 'UTC'
@@ -279,8 +289,12 @@ function legLines(leg, legIdx, userId, memberName) {
 
   if (!depVal) return []
 
+  const uid = leg._source === 'legacy'
+    ? `leg-${leg._legacyDocId}-${leg._legacyIdx}`
+    : `leg-${leg._docId}`
+
   const descParts = [
-    `Traveler: ${memberName}`,
+    names.length ? `Traveler${names.length > 1 ? 's' : ''}: ${names.join(', ')}` : null,
     leg.number    ? `${label} number: ${leg.number}` : null,
     leg.from      ? `From: ${leg.from}` : null,
     leg.to        ? `To: ${leg.to}` : null,
@@ -291,7 +305,7 @@ function legLines(leg, legIdx, userId, memberName) {
 
   return [
     'BEGIN:VEVENT',
-    `UID:leg-${userId}-${legIdx}`,
+    `UID:${uid}`,
     `DTSTAMP:${nowUTC()}`,
     `SUMMARY:${escapeICS(summary)}`,
     `DTSTART;TZID=${departTZ}:${depVal}`,
@@ -302,41 +316,117 @@ function legLines(leg, legIdx, userId, memberName) {
   ].filter(Boolean)
 }
 
-function accommodationLines(detail, userId, memberName) {
-  if (!detail.accommodation && !detail.accommodation_address) return []
+function pickAccomDates(accom, relatedLegs) {
+  if (accom.check_in) {
+    return { checkIn: accom.check_in, checkOut: accom.check_out || null }
+  }
+  if (!relatedLegs.length) return { checkIn: null, checkOut: null }
+  const arrDates = relatedLegs.map(l => isoLocalToDate(l.arrive_at)).filter(Boolean).sort()
+  const depDates = relatedLegs.map(l => isoLocalToDate(l.depart_at)).filter(Boolean).sort()
+  return {
+    checkIn: arrDates[0] || null,
+    checkOut: depDates[depDates.length - 1] || null,
+  }
+}
 
-  const accomName    = detail.accommodation || 'Accommodation'
-  const accomAddress = detail.accommodation_address || ''
-  const firstName    = memberName.split(' ')[0]
+function relatedLegsFor(accom, allLegs) {
+  const ids = new Set(accom.traveler_ids || [])
+  if (!ids.size) return []
+  return allLegs.filter(l => (l.traveler_ids || []).some(id => ids.has(id)))
+}
 
-  const legs     = detail.legs || []
-  const arrDates = legs.map(l => isoLocalToDate(l.arrive_at)).filter(Boolean).sort()
-  const depDates = legs.map(l => isoLocalToDate(l.depart_at)).filter(Boolean).sort()
-  const checkIn  = arrDates[0] || null
-  const checkOut = depDates[depDates.length - 1] || null
+// `accom` is normalized: { name, address, check_in, check_out, notes,
+// traveler_ids, traveler_names, _source, _docId | _legacyDocId }
+function accommodationLines(accom, allLegs) {
+  if (!accom.name && !accom.address) return []
+  const accomName    = accom.name || 'Accommodation'
+  const accomAddress = accom.address || ''
+  const names        = accom.traveler_names || []
 
+  const { checkIn, checkOut } = pickAccomDates(accom, relatedLegsFor(accom, allLegs))
   if (!checkIn) return []
 
   const startVal = toDateValue(checkIn)
   const endVal   = (checkOut && checkOut !== checkIn) ? toDateValue(checkOut) : nextDay(startVal)
 
+  const uid = accom._source === 'legacy'
+    ? `accom-${accom._legacyDocId}`
+    : `accom-${accom._docId}`
+
   const desc = [
-    `Traveler: ${memberName}`,
+    names.length ? `Traveler${names.length > 1 ? 's' : ''}: ${names.join(', ')}` : null,
     accomAddress ? `Address: ${accomAddress}` : null,
-    detail.notes ? `Notes: ${detail.notes}` : null,
+    accom.notes  ? `Notes: ${accom.notes}` : null,
   ].filter(Boolean).join('\n')
 
   return [
     'BEGIN:VEVENT',
-    `UID:accom-${userId}`,
+    `UID:${uid}`,
     `DTSTAMP:${nowUTC()}`,
-    `SUMMARY:${escapeICS(`🏨 ${accomName} · ${firstName}`)}`,
+    `SUMMARY:${escapeICS(`🏨 ${accomName} · ${shortWho(names)}`)}`,
     `DTSTART;VALUE=DATE:${startVal}`,
     `DTEND;VALUE=DATE:${endVal}`,
     accomAddress ? `LOCATION:${escapeICS(accomAddress)}` : null,
     `DESCRIPTION:${escapeICS(desc)}`,
     'END:VEVENT',
   ].filter(Boolean)
+}
+
+// Merge legacy travel_details + new trip_legs/trip_accommodations into one
+// normalized list each, the same shape the client uses.
+function buildNormalizedTravel(legacyDetails, sharedLegs, sharedAccoms, members) {
+  const memberById = Object.fromEntries(members.map(m => [m.id, m]))
+  const namesFor = (ids) => (ids || []).map(id => memberById[id]?.full_name).filter(Boolean)
+
+  const legs = []
+  for (const detail of legacyDetails) {
+    ;(detail.legs || []).forEach((leg, idx) => {
+      legs.push({
+        ...leg,
+        _source: 'legacy',
+        _legacyDocId: detail.id,
+        _legacyIdx: idx,
+        traveler_ids: [detail.user_id],
+        traveler_names: namesFor([detail.user_id]),
+      })
+    })
+  }
+  for (const leg of sharedLegs) {
+    legs.push({
+      ...leg,
+      _source: 'shared',
+      _docId: leg.id,
+      traveler_names: namesFor(leg.traveler_ids),
+    })
+  }
+
+  const accoms = []
+  for (const detail of legacyDetails) {
+    if (detail.accommodation || detail.accommodation_address) {
+      accoms.push({
+        name: detail.accommodation || '',
+        address: detail.accommodation_address || '',
+        check_in: '',
+        check_out: '',
+        notes: detail.notes || '',
+        _source: 'legacy',
+        _legacyDocId: detail.id,
+        traveler_ids: [detail.user_id],
+        traveler_names: namesFor([detail.user_id]),
+      })
+    }
+  }
+  for (const accom of sharedAccoms) {
+    accoms.push({
+      ...accom,
+      _source: 'shared',
+      _docId: accom.id,
+      traveler_ids: accom.traveler_ids || [],
+      traveler_names: namesFor(accom.traveler_ids),
+    })
+  }
+
+  return { legs, accoms }
 }
 
 // ─── ICS builders ─────────────────────────────────────────────────────────────
@@ -352,34 +442,70 @@ function buildItineraryICS(trip, events) {
   return injectVTimezones(lines).join('\r\n')
 }
 
-function buildTravelICS(trip, travelDetails, members) {
+function buildTravelICS(trip, normalizedLegs, normalizedAccoms) {
   const lines = icsHeader(`${trip.name} – Travel`, trip.timezone || null)
   tripBannerLines(trip).forEach(l => lines.push(l))
-  for (const detail of travelDetails) {
-    const member = members.find(m => m.id === detail.user_id)
-    const name   = member?.full_name || 'Traveler'
-    ;(detail.legs || []).forEach((leg, i) => legLines(leg, i, detail.user_id, name).forEach(l => lines.push(l)))
-    accommodationLines(detail, detail.user_id, name).forEach(l => lines.push(l))
+  for (const leg of normalizedLegs) {
+    legLines(leg).forEach(l => lines.push(l))
+  }
+  for (const accom of normalizedAccoms) {
+    accommodationLines(accom, normalizedLegs).forEach(l => lines.push(l))
   }
   lines.push('END:VCALENDAR')
   return injectVTimezones(lines).join('\r\n')
 }
 
-function buildCombinedICS(trip, events, travelDetails, members) {
+function buildCombinedICS(trip, events, normalizedLegs, normalizedAccoms) {
   const lines = icsHeader(`${trip.name} – Full Trip`, trip.timezone || null)
   tripBannerLines(trip).forEach(l => lines.push(l))
   const tz = trip.timezone || 'UTC'
   for (const event of events) {
     eventLines(event, tz).forEach(l => lines.push(l))
   }
-  for (const detail of travelDetails) {
-    const member = members.find(m => m.id === detail.user_id)
-    const name   = member?.full_name || 'Traveler'
-    ;(detail.legs || []).forEach((leg, i) => legLines(leg, i, detail.user_id, name).forEach(l => lines.push(l)))
-    accommodationLines(detail, detail.user_id, name).forEach(l => lines.push(l))
+  for (const leg of normalizedLegs) {
+    legLines(leg).forEach(l => lines.push(l))
+  }
+  for (const accom of normalizedAccoms) {
+    accommodationLines(accom, normalizedLegs).forEach(l => lines.push(l))
   }
   lines.push('END:VCALENDAR')
   return injectVTimezones(lines).join('\r\n')
+}
+
+// ─── Subscription filter helpers ──────────────────────────────────────────────
+// `filter` shape (all optional, defaults preserve existing behaviour):
+//   traveler_ids:             array | null    null = include all travelers
+//   include_transport_events: boolean         default true
+//   only_my_events:           boolean         default false
+// `ownerId` is the user_id of the token's creator — used for `only_my_events`.
+
+function filterTravelersOnLegs(legs, travelerIds) {
+  if (travelerIds == null) return legs
+  const set = new Set(travelerIds)
+  if (!set.size) return []
+  return legs.filter(l => (l.traveler_ids || []).some(id => set.has(id)))
+}
+
+function filterTravelersOnAccoms(accoms, travelerIds) {
+  if (travelerIds == null) return accoms
+  const set = new Set(travelerIds)
+  if (!set.size) return []
+  return accoms.filter(a => (a.traveler_ids || []).some(id => set.has(id)))
+}
+
+function filterEvents(events, filter, ownerId) {
+  return events.filter(e => {
+    if (filter.include_transport_events === false && e.type === 'transport') return false
+    if (filter.only_my_events && ownerId) {
+      const a = e.assigned_to
+      // assigned_to encodings: ['__all__'] = everyone, [] / null = unassigned, [...] = list
+      if (Array.isArray(a) && a[0] === '__all__') return true
+      if (typeof a === 'string') return a === ownerId
+      if (!a || (Array.isArray(a) && a.length === 0)) return false
+      return Array.isArray(a) && a.includes(ownerId)
+    }
+    return true
+  })
 }
 
 // ─── Cloud Function ───────────────────────────────────────────────────────────
@@ -400,7 +526,9 @@ exports.calendarFeed = functions.https.onRequest(async (req, res) => {
   const tokenSnap = await db.collection('calendar_tokens').doc(token).get()
   if (!tokenSnap.exists) return res.status(403).send('Invalid or expired token')
 
-  const { trip_id } = tokenSnap.data()
+  const tokenData = tokenSnap.data()
+  const { trip_id, created_by: ownerId } = tokenData
+  const filter = tokenData.filter || {}
 
   const tripSnap = await db.collection('trips').doc(trip_id).get()
   if (!tripSnap.exists) return res.status(404).send('Trip not found')
@@ -409,27 +537,37 @@ exports.calendarFeed = functions.https.onRequest(async (req, res) => {
   let icsContent
 
   if (type === 'travel' || type === 'combined') {
-    const [detailsSnap, membersSnap] = await Promise.all([
+    const [detailsSnap, legsSnap, accomsSnap, membersSnap] = await Promise.all([
       db.collection('travel_details').where('trip_id', '==', trip_id).get(),
+      db.collection('trip_legs').where('trip_id', '==', trip_id).get(),
+      db.collection('trip_accommodations').where('trip_id', '==', trip_id).get(),
       db.collection('trip_members').where('trip_id', '==', trip_id).get(),
     ])
     const travelDetails = detailsSnap.docs.map(d => ({ id: d.id, ...d.data() }))
+    const sharedLegs    = legsSnap.docs.map(d => ({ id: d.id, ...d.data() }))
+    const sharedAccoms  = accomsSnap.docs.map(d => ({ id: d.id, ...d.data() }))
     const profileIds    = membersSnap.docs.map(d => d.data().user_id)
     const profiles      = await Promise.all(profileIds.map(uid => db.collection('profiles').doc(uid).get()))
     const members       = profiles.filter(s => s.exists).map(s => ({ id: s.id, ...s.data() }))
 
+    let { legs, accoms } = buildNormalizedTravel(travelDetails, sharedLegs, sharedAccoms, members)
+    legs   = filterTravelersOnLegs(legs, filter.traveler_ids)
+    accoms = filterTravelersOnAccoms(accoms, filter.traveler_ids)
+
     if (type === 'combined') {
       const eventsSnap = await db.collection('itinerary_events')
         .where('trip_id', '==', trip_id).orderBy('time', 'asc').get()
-      const events = eventsSnap.docs.map(d => ({ id: d.id, ...d.data() }))
-      icsContent = buildCombinedICS(trip, events, travelDetails, members)
+      const allEvents = eventsSnap.docs.map(d => ({ id: d.id, ...d.data() }))
+      const events = filterEvents(allEvents, filter, ownerId)
+      icsContent = buildCombinedICS(trip, events, legs, accoms)
     } else {
-      icsContent = buildTravelICS(trip, travelDetails, members)
+      icsContent = buildTravelICS(trip, legs, accoms)
     }
   } else {
     const eventsSnap = await db.collection('itinerary_events')
       .where('trip_id', '==', trip_id).orderBy('time', 'asc').get()
-    const events = eventsSnap.docs.map(d => ({ id: d.id, ...d.data() }))
+    const allEvents = eventsSnap.docs.map(d => ({ id: d.id, ...d.data() }))
+    const events = filterEvents(allEvents, filter, ownerId)
     icsContent = buildItineraryICS(trip, events)
   }
 

@@ -229,13 +229,20 @@ function eventLines(event, tripTimezone) {
 const TRANSPORT_LABELS = { flight:'Flight', train:'Train', bus:'Bus', car:'Car', ferry:'Ferry', subway:'Subway', taxi:'Taxi', walk:'Walk', other:'Journey' }
 const TRANSPORT_ICONS  = { flight:'✈️', train:'🚂', bus:'🚌', car:'🚗', ferry:'⛴️', subway:'🚇', taxi:'🚕', walk:'🚶', other:'🛸' }
 
-function legLines(leg, legIdx, userId, memberName) {
+// `leg` is the normalized shape from src/lib/travel.js: includes traveler_names,
+// _source ('shared'|'legacy'), and either _docId or _legacyDocId/_legacyIdx.
+function legLines(leg) {
   const icon      = TRANSPORT_ICONS[leg.transport] || '🛸'
   const label     = TRANSPORT_LABELS[leg.transport] || 'Journey'
-  const firstName = memberName.split(' ')[0]
   const ref       = leg.number || label
   const route     = [leg.from, leg.to].filter(Boolean).join(' → ')
-  const summary   = `${icon} ${ref} · ${firstName}${route ? ': ' + route : ''}`
+  const names     = leg.traveler_names || []
+  const firstNames = names.map(n => n.split(' ')[0])
+  const whoShort  = firstNames.length === 0 ? 'Traveler'
+                   : firstNames.length === 1 ? firstNames[0]
+                   : firstNames.length === 2 ? firstNames.join(' & ')
+                   : `${firstNames[0]} +${firstNames.length - 1}`
+  const summary   = `${icon} ${ref} · ${whoShort}${route ? ': ' + route : ''}`
 
   const departTZ = leg.depart_tz || 'UTC'
   const arriveTZ = leg.arrive_tz || leg.depart_tz || 'UTC'
@@ -243,16 +250,20 @@ function legLines(leg, legIdx, userId, memberName) {
   const depDT = isoLocalToTZ(leg.depart_at, departTZ)
   const arrDT = isoLocalToTZ(leg.arrive_at, arriveTZ)
 
-  if (!depDT) return []   // Can't make a calendar event without a start time
+  if (!depDT) return []
+
+  const uid = leg._source === 'legacy'
+    ? `leg-${leg._legacyDocId}-${leg._legacyIdx}`
+    : `leg-${leg._docId || Math.random().toString(36).slice(2)}`
 
   const descParts = [
-    `Traveler: ${memberName}`,
-    leg.notes     ? `Notes: ${leg.notes}` : null,
+    names.length > 0 ? `Traveler${names.length > 1 ? 's' : ''}: ${names.join(', ')}` : null,
+    leg.notes ? `Notes: ${leg.notes}` : null,
   ].filter(Boolean)
 
   return [
     'BEGIN:VEVENT',
-    `UID:leg-${userId}-${legIdx}`,
+    `UID:${uid}`,
     `DTSTAMP:${nowUTC()}`,
     `SUMMARY:${escapeICS(summary)}`,
     `DTSTART;TZID=${departTZ}:${depDT.value}`,
@@ -265,26 +276,39 @@ function legLines(leg, legIdx, userId, memberName) {
   ].filter(Boolean)
 }
 
-function accommodationLines(detail, userId, memberName) {
-  if (!detail.accommodation && !detail.accommodation_address) return []
-
-  const accomName    = detail.accommodation || 'Accommodation'
-  const accomAddress = detail.accommodation_address || ''
-  const firstName    = memberName.split(' ')[0]
-  const summary      = `🏨 ${accomName} · ${firstName}`
-
-  const legs     = detail.legs || []
-  // Use timezone-aware dates if available
-  const arrDates = legs
+// Pick check-in/out dates with this priority:
+//   1. Explicit accom.check_in/check_out (new shared shape)
+//   2. Inferred from `relatedLegs` arrival/departure (legacy: arrival of first leg → departure of last)
+function pickAccomDates(accom, relatedLegs = []) {
+  if (accom.check_in) {
+    return { checkIn: accom.check_in, checkOut: accom.check_out || null }
+  }
+  if (!relatedLegs.length) return { checkIn: null, checkOut: null }
+  const arrDates = relatedLegs
     .map(l => isoLocalToTZ(l.arrive_at, l.arrive_tz || l.depart_tz)?.date)
     .filter(Boolean).sort()
-  const depDates = legs
+  const depDates = relatedLegs
     .map(l => isoLocalToTZ(l.depart_at, l.depart_tz)?.date)
     .filter(Boolean).sort()
+  return {
+    checkIn: arrDates[0] || null,
+    checkOut: depDates[depDates.length - 1] || null,
+  }
+}
 
-  const checkIn  = arrDates[0] || null
-  const checkOut = depDates[depDates.length - 1] || null
+function accommodationLines(accom, relatedLegs = []) {
+  if (!accom.name && !accom.address) return []
+  const accomName    = accom.name || 'Accommodation'
+  const accomAddress = accom.address || ''
+  const names        = accom.traveler_names || []
+  const firstNames   = names.map(n => n.split(' ')[0])
+  const whoShort     = firstNames.length === 0 ? 'Traveler'
+                      : firstNames.length === 1 ? firstNames[0]
+                      : firstNames.length === 2 ? firstNames.join(' & ')
+                      : `${firstNames[0]} +${firstNames.length - 1}`
+  const summary      = `🏨 ${accomName} · ${whoShort}`
 
+  const { checkIn, checkOut } = pickAccomDates(accom, relatedLegs)
   if (!checkIn) return []
 
   const startVal = toDateValue(checkIn)
@@ -292,14 +316,18 @@ function accommodationLines(detail, userId, memberName) {
     ? toDateValue(checkOut)
     : nextDay(startVal)
 
+  const uid = accom._source === 'legacy'
+    ? `accom-${accom._legacyDocId}`
+    : `accom-${accom._docId || Math.random().toString(36).slice(2)}`
+
   const desc = [
-    `Traveler: ${memberName}`,
-    detail.notes ? `Notes: ${detail.notes}` : null,
+    names.length > 0 ? `Traveler${names.length > 1 ? 's' : ''}: ${names.join(', ')}` : null,
+    accom.notes ? `Notes: ${accom.notes}` : null,
   ].filter(Boolean).join('\n')
 
   return [
     'BEGIN:VEVENT',
-    `UID:accom-${userId}`,
+    `UID:${uid}`,
     `DTSTAMP:${nowUTC()}`,
     `SUMMARY:${escapeICS(summary)}`,
     `DTSTART;VALUE=DATE:${startVal}`,
@@ -308,6 +336,15 @@ function accommodationLines(detail, userId, memberName) {
     `DESCRIPTION:${escapeICS(desc)}`,
     'END:VEVENT',
   ].filter(Boolean)
+}
+
+// For each accommodation, find legs that share at least one traveler with it.
+// This is used as a fallback when an accom has no explicit check_in/check_out
+// (legacy data) — we still derive dates from the traveler's flights.
+function relatedLegsFor(accom, allLegs) {
+  const ids = new Set(accom.traveler_ids || [])
+  if (!ids.size) return []
+  return allLegs.filter(l => (l.traveler_ids || []).some(id => ids.has(id)))
 }
 
 // ─── Public generate functions ────────────────────────────────────────────────
@@ -323,47 +360,38 @@ export function generateICS(events, calName, trip) {
   return injectVTimezones(lines).join('\r\n')
 }
 
-export function generateTravelICS(travelDetails, members, selectedIds, tripName, trip) {
-  const lines = icsHeader(`${tripName} – Travel`, trip?.timezone || null)
+// New signature: takes already-normalized legs and accommodations.
+// Callers should use src/lib/travel.js to merge legacy + shared shapes first.
+export function generateTravelICS({ legs = [], accommodations = [], trip }) {
+  const lines = icsHeader(`${trip?.name || 'Trip'} – Travel`, trip?.timezone || null)
   tripBannerLines(trip).forEach(l => lines.push(l))
 
-  const selected = Array.isArray(travelDetails)
-    ? travelDetails.filter(d => selectedIds.includes(d.user_id))
-    : Object.values(travelDetails).filter(d => selectedIds.includes(d.user_id))
-
-  for (const detail of selected) {
-    const member = members.find(m => m.id === detail.user_id)
-    const name   = member?.full_name || 'Traveler'
-    ;(detail.legs || []).forEach((leg, i) => {
-      legLines(leg, i, detail.user_id, name).forEach(l => lines.push(l))
-    })
-    accommodationLines(detail, detail.user_id, name).forEach(l => lines.push(l))
+  for (const leg of legs) {
+    legLines(leg).forEach(l => lines.push(l))
+  }
+  for (const accom of accommodations) {
+    const related = relatedLegsFor(accom, legs)
+    accommodationLines(accom, related).forEach(l => lines.push(l))
   }
 
   lines.push('END:VCALENDAR')
   return injectVTimezones(lines).join('\r\n')
 }
 
-export function generateCombinedICS(events, travelDetails, members, selectedTravelerIds, trip) {
-  const lines = icsHeader(`${trip.name} – Full Trip`, trip?.timezone || null)
+export function generateCombinedICS({ events = [], legs = [], accommodations = [], trip }) {
+  const lines = icsHeader(`${trip?.name || 'Trip'} – Full Trip`, trip?.timezone || null)
   tripBannerLines(trip).forEach(l => lines.push(l))
 
   const tz = trip?.timezone || 'UTC'
   for (const event of events) {
     eventLines(event, tz).forEach(l => lines.push(l))
   }
-
-  const selected = Array.isArray(travelDetails)
-    ? travelDetails.filter(d => selectedTravelerIds.includes(d.user_id))
-    : Object.values(travelDetails).filter(d => selectedTravelerIds.includes(d.user_id))
-
-  for (const detail of selected) {
-    const member = members.find(m => m.id === detail.user_id)
-    const name   = member?.full_name || 'Traveler'
-    ;(detail.legs || []).forEach((leg, i) => {
-      legLines(leg, i, detail.user_id, name).forEach(l => lines.push(l))
-    })
-    accommodationLines(detail, detail.user_id, name).forEach(l => lines.push(l))
+  for (const leg of legs) {
+    legLines(leg).forEach(l => lines.push(l))
+  }
+  for (const accom of accommodations) {
+    const related = relatedLegsFor(accom, legs)
+    accommodationLines(accom, related).forEach(l => lines.push(l))
   }
 
   lines.push('END:VCALENDAR')
@@ -376,17 +404,17 @@ export function downloadICS(events, calName, trip) {
   triggerDownload(generateICS(events, calName, trip), calName)
 }
 
-export function downloadTravelICS(travelDetails, members, selectedIds, tripName, trip) {
+export function downloadTravelICS({ legs, accommodations, trip }) {
   triggerDownload(
-    generateTravelICS(travelDetails, members, selectedIds, tripName, trip),
-    `${tripName} – Travel`
+    generateTravelICS({ legs, accommodations, trip }),
+    `${trip?.name || 'Trip'} – Travel`
   )
 }
 
-export function downloadCombinedICS(events, travelDetails, members, selectedTravelerIds, trip) {
+export function downloadCombinedICS({ events, legs, accommodations, trip }) {
   triggerDownload(
-    generateCombinedICS(events, travelDetails, members, selectedTravelerIds, trip),
-    `${trip.name} – Full Trip`
+    generateCombinedICS({ events, legs, accommodations, trip }),
+    `${trip?.name || 'Trip'} – Full Trip`
   )
 }
 

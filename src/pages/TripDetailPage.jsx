@@ -27,6 +27,8 @@ export default function TripDetailPage() {
   const [trip, setTrip] = useState(null)
   const [members, setMembers] = useState([])
   const [travelDetails, setTravelDetails] = useState([])
+  const [sharedLegs, setSharedLegs] = useState([])
+  const [sharedAccoms, setSharedAccoms] = useState([])
   const [activeTab, setActiveTab] = useState('itinerary')
   const [loading, setLoading] = useState(true)
   const [showEdit, setShowEdit] = useState(false)
@@ -36,14 +38,18 @@ export default function TripDetailPage() {
 
   async function loadTrip() {
     setLoading(true)
-    const [tripSnap, memSnap, detailSnap] = await Promise.all([
+    const [tripSnap, memSnap, detailSnap, legsSnap, accomsSnap] = await Promise.all([
       getDoc(doc(db, 'trips', id)),
       getDocs(query(collection(db, 'trip_members'), where('trip_id', '==', id))),
       getDocs(query(collection(db, 'travel_details'), where('trip_id', '==', id))),
+      getDocs(query(collection(db, 'trip_legs'), where('trip_id', '==', id))),
+      getDocs(query(collection(db, 'trip_accommodations'), where('trip_id', '==', id))),
     ])
     if (!tripSnap.exists()) { setLoading(false); return }
     setTrip({ id: tripSnap.id, ...tripSnap.data() })
-    setTravelDetails(detailSnap.docs.map(d => ({ id: d.id, ...d.data() })))
+    setTravelDetails(detailSnap.docs.map(d => ({ _docId: d.id, id: d.id, ...d.data() })))
+    setSharedLegs(legsSnap.docs.map(d => ({ id: d.id, ...d.data() })))
+    setSharedAccoms(accomsSnap.docs.map(d => ({ id: d.id, ...d.data() })))
 
     const memberData = await Promise.all(
       memSnap.docs.map(async d => {
@@ -192,6 +198,8 @@ export default function TripDetailPage() {
             days={days}
             members={members}
             travelDetails={travelDetails}
+            sharedLegs={sharedLegs}
+            sharedAccoms={sharedAccoms}
             currentUser={user}
           />
         )}
@@ -200,6 +208,9 @@ export default function TripDetailPage() {
             tripId={id}
             trip={trip}
             members={members}
+            travelDetails={travelDetails}
+            sharedLegs={sharedLegs}
+            sharedAccoms={sharedAccoms}
             currentUser={user}
             onUpdate={loadTrip}
           />
@@ -224,6 +235,10 @@ export default function TripDetailPage() {
       {showSubscribe && (
         <CalendarSubscribeSheet
           trip={trip}
+          members={members}
+          travelDetails={travelDetails}
+          sharedLegs={sharedLegs}
+          sharedAccoms={sharedAccoms}
           onClose={() => setShowSubscribe(false)}
         />
       )}

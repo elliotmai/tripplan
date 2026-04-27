@@ -1,7 +1,10 @@
-import { useState, useEffect } from 'react'
+import { useMemo, useState, useEffect } from 'react'
 import { useAuth } from '../contexts/AuthContext'
-import { getOrCreateFeedTokens, revokeFeedTokens } from '../lib/calendarTokens'
-import { X, Copy, Check, RefreshCw, AlertTriangle } from 'lucide-react'
+import {
+  getOrCreateFeedTokens, revokeFeedTokens, updateFeedFilter, DEFAULT_FEED_FILTER,
+} from '../lib/calendarTokens'
+import { membersWithTravel, normalizeLegs, normalizeAccommodations } from '../lib/travel'
+import { X, Copy, Check, RefreshCw, AlertTriangle, Users, Filter } from 'lucide-react'
 
 const PLATFORMS = [
   {
@@ -100,13 +103,31 @@ function FeedRow({ label, emoji, description, url, accentColor }) {
   )
 }
 
-export default function CalendarSubscribeSheet({ trip, onClose }) {
+export default function CalendarSubscribeSheet({
+  trip, members = [], travelDetails = [], sharedLegs = [], sharedAccoms = [], onClose,
+}) {
   const { user } = useAuth()
   const [feeds, setFeeds]                   = useState(null)
   const [loading, setLoading]               = useState(true)
   const [revoking, setRevoking]             = useState(false)
   const [activePlatform, setActivePlatform] = useState('apple')
   const [showRevoke, setShowRevoke]         = useState(false)
+  const [filter, setFilter]                 = useState(DEFAULT_FEED_FILTER)
+  const [savingFilter, setSavingFilter]     = useState(false)
+  const [filterDirty, setFilterDirty]       = useState(false)
+
+  const allLegs = useMemo(
+    () => normalizeLegs({ legacyDetails: travelDetails, sharedLegs, members }),
+    [travelDetails, sharedLegs, members]
+  )
+  const allAccoms = useMemo(
+    () => normalizeAccommodations({ legacyDetails: travelDetails, sharedAccoms, members }),
+    [travelDetails, sharedAccoms, members]
+  )
+  const travelersWithTravel = useMemo(
+    () => membersWithTravel(members, allLegs, allAccoms),
+    [members, allLegs, allAccoms]
+  )
 
   useEffect(() => { loadTokens() }, [trip.id])
 
@@ -115,6 +136,9 @@ export default function CalendarSubscribeSheet({ trip, onClose }) {
     try {
       const result = await getOrCreateFeedTokens(trip.id, user.id)
       setFeeds(result)
+      const stored = result.combined?.filter || result.travel?.filter || result.itinerary?.filter
+      if (stored) setFilter({ ...DEFAULT_FEED_FILTER, ...stored })
+      setFilterDirty(false)
     } catch (e) {
       console.error('Failed to create calendar tokens:', e)
     }
@@ -127,6 +151,21 @@ export default function CalendarSubscribeSheet({ trip, onClose }) {
     setShowRevoke(false)
     setRevoking(false)
     await loadTokens()
+  }
+
+  function updateFilter(patch) {
+    setFilter(prev => ({ ...prev, ...patch }))
+    setFilterDirty(true)
+  }
+
+  async function saveFilter() {
+    setSavingFilter(true)
+    try {
+      await updateFeedFilter(trip.id, user.id, filter)
+      setFilterDirty(false)
+    } finally {
+      setSavingFilter(false)
+    }
   }
 
   const platform = PLATFORMS.find(p => p.id === activePlatform)
@@ -168,6 +207,16 @@ export default function CalendarSubscribeSheet({ trip, onClose }) {
             </div>
           ) : feeds ? (
             <>
+              {/* Filter panel */}
+              <FilterPanel
+                filter={filter}
+                travelers={travelersWithTravel}
+                dirty={filterDirty}
+                saving={savingFilter}
+                onChange={updateFilter}
+                onSave={saveFilter}
+              />
+
               {/* Feed URLs */}
               <div className="space-y-3">
                 <p className="text-xs tracking-widest uppercase" style={{ color: '#5a5248' }}>Your Feed URLs</p>
@@ -278,6 +327,132 @@ export default function CalendarSubscribeSheet({ trip, onClose }) {
             </p>
           )}
         </div>
+      </div>
+    </div>
+  )
+}
+
+// ─── Filter panel ─────────────────────────────────────────────────────────────
+
+function ToggleRow({ label, description, checked, onChange }) {
+  return (
+    <button onClick={() => onChange(!checked)}
+      className="w-full flex items-start gap-3 px-4 py-3 rounded-xl text-left transition-all"
+      style={{
+        background: checked ? 'rgba(212,184,122,0.08)' : 'rgba(255,255,255,0.03)',
+        border: checked ? '1px solid rgba(212,184,122,0.2)' : '1px solid rgba(255,255,255,0.06)',
+      }}>
+      <div className="flex-1 min-w-0">
+        <p className="text-sm" style={{ color: checked ? '#d4cfc8' : '#b5aea4' }}>{label}</p>
+        {description && <p className="text-xs mt-0.5" style={{ color: '#5a5248' }}>{description}</p>}
+      </div>
+      <div className="w-9 h-5 rounded-full flex-shrink-0 mt-0.5 relative transition-all"
+        style={{ background: checked ? '#d4b87a' : 'rgba(255,255,255,0.1)' }}>
+        <div className="absolute top-0.5 w-4 h-4 rounded-full bg-white transition-all"
+          style={{ left: checked ? 'calc(100% - 18px)' : '2px' }} />
+      </div>
+    </button>
+  )
+}
+
+function FilterPanel({ filter, travelers, dirty, saving, onChange, onSave }) {
+  const allIds = travelers.map(m => m.id)
+  // null = all (including future); array = explicit list
+  const isAll = filter.traveler_ids == null
+  const selected = isAll ? new Set(allIds) : new Set(filter.traveler_ids || [])
+
+  function toggleTraveler(id) {
+    let next
+    if (isAll) {
+      next = allIds.filter(i => i !== id)
+    } else {
+      next = selected.has(id) ? [...selected].filter(i => i !== id) : [...selected, id]
+    }
+    // If user re-selects everyone, store null (means "all current and future").
+    if (next.length === allIds.length) {
+      onChange({ traveler_ids: null })
+    } else {
+      onChange({ traveler_ids: next })
+    }
+  }
+
+  function selectAll() { onChange({ traveler_ids: null }) }
+  function selectNone() { onChange({ traveler_ids: [] }) }
+
+  return (
+    <div className="rounded-xl overflow-hidden"
+      style={{ background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.06)' }}>
+      <div className="px-4 py-3" style={{ borderBottom: '1px solid rgba(255,255,255,0.05)' }}>
+        <p className="text-xs flex items-center gap-1.5" style={{ color: '#d4b87a' }}>
+          <Filter size={11} />Customize what's in your feed
+        </p>
+        <p className="text-xs mt-0.5" style={{ color: '#5a5248' }}>
+          Applies to all three feed URLs above.
+        </p>
+      </div>
+
+      <div className="px-4 py-4 space-y-3">
+
+        <ToggleRow
+          label="Include transport in itinerary"
+          description="Events tagged Transport (e.g. transfers planned in the day-to-day)."
+          checked={filter.include_transport_events !== false}
+          onChange={v => onChange({ include_transport_events: v })}
+        />
+
+        <ToggleRow
+          label="Only events that include me"
+          description="Hide itinerary events I'm not assigned to."
+          checked={!!filter.only_my_events}
+          onChange={v => onChange({ only_my_events: v })}
+        />
+
+        {travelers.length > 0 && (
+          <div>
+            <div className="flex items-center justify-between mb-2 mt-1">
+              <p className="text-xs flex items-center gap-1.5" style={{ color: '#5a5248' }}>
+                <Users size={10} />Whose travel details to include
+              </p>
+              <div className="flex gap-3">
+                <button onClick={selectAll} className="text-xs" style={{ color: '#d4b87a' }}>All</button>
+                <button onClick={selectNone} className="text-xs" style={{ color: '#5a5248' }}>None</button>
+              </div>
+            </div>
+            <div className="flex flex-wrap gap-1.5">
+              {travelers.map(m => {
+                const sel = selected.has(m.id)
+                return (
+                  <button key={m.id} onClick={() => toggleTraveler(m.id)}
+                    className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl text-xs transition-all"
+                    style={{
+                      background: sel ? 'rgba(212,184,122,0.15)' : 'rgba(255,255,255,0.04)',
+                      border: sel ? '1px solid rgba(212,184,122,0.35)' : '1px solid rgba(255,255,255,0.08)',
+                      color: sel ? '#d4b87a' : '#5a5248',
+                    }}>
+                    {m.full_name?.split(' ')[0]}
+                    {sel && <Check size={9} />}
+                  </button>
+                )
+              })}
+            </div>
+            {isAll && (
+              <p className="text-xs mt-2" style={{ color: '#3d3830' }}>
+                Includes any travelers added later.
+              </p>
+            )}
+          </div>
+        )}
+
+        {dirty && (
+          <button onClick={onSave} disabled={saving}
+            className="w-full py-2.5 rounded-xl text-xs font-medium mt-2 transition-all active:scale-95"
+            style={{
+              background: saving ? '#3d3830' : 'linear-gradient(135deg, #d4b87a 0%, #c19a4e 100%)',
+              color: saving ? '#5a5248' : '#0a0908',
+            }}>
+            {saving ? 'Saving…' : 'Apply to feed URLs'}
+          </button>
+        )}
       </div>
     </div>
   )

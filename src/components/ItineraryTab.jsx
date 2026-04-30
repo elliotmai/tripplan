@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react'
 import {
   collection, query, where, getDocs,
-  addDoc, updateDoc, deleteDoc, doc, orderBy, serverTimestamp
+  addDoc, updateDoc, deleteDoc, doc, serverTimestamp
 } from 'firebase/firestore'
 import { db } from '../lib/firebase'
 import { fetchWeatherForTrip } from '../lib/weather'
@@ -116,11 +116,14 @@ function buildTravelByDate(legs) {
     const arrDate = leg.arrive_at?.slice(0, 10)
     const sameDay = depDate && arrDate && depDate === arrDate
     if (leg.depart_at) {
-      push(depDate, { kind: 'depart', name, transport: leg.transport, number: leg.number, from: leg.from, to: leg.to, depart_time: formatTime(leg.depart_at), arrive_time: sameDay ? formatTime(leg.arrive_at) : null, meta })
+      push(depDate, { kind: 'depart', name, transport: leg.transport, number: leg.number, from: leg.from, to: leg.to, depart_time: formatTime(leg.depart_at), arrive_time: sameDay ? formatTime(leg.arrive_at) : null, meta, _sortAt: leg.depart_at })
     }
     if (leg.arrive_at && !sameDay) {
-      push(arrDate, { kind: 'arrive', name, transport: leg.transport, number: leg.number, from: leg.from, to: leg.to, depart_time: null, arrive_time: formatTime(leg.arrive_at), meta })
+      push(arrDate, { kind: 'arrive', name, transport: leg.transport, number: leg.number, from: leg.from, to: leg.to, depart_time: null, arrive_time: formatTime(leg.arrive_at), meta, _sortAt: leg.arrive_at })
     }
+  })
+  Object.keys(byDate).forEach(d => {
+    byDate[d].sort((a, b) => (a._sortAt || '').localeCompare(b._sortAt || ''))
   })
   return byDate
 }
@@ -666,17 +669,24 @@ export default function ItineraryTab({
   useEffect(() => {
     loadEvents()
     if (trip.lat && trip.lon && trip.start_date && trip.end_date) {
-      fetchWeatherForTrip(trip.lat, trip.lon, trip.start_date, trip.end_date).then(setWeather)
+      fetchWeatherForTrip(trip.lat, trip.lon, trip.start_date, trip.end_date).then(w => setWeather(w || []))
     }
   }, [tripId])
 
   async function loadEvents() {
     const snap = await getDocs(query(
       collection(db, 'itinerary_events'),
-      where('trip_id', '==', tripId),
-      orderBy('time', 'asc')
+      where('trip_id', '==', tripId)
     ))
-    setEvents(snap.docs.map(d => ({ id: d.id, ...d.data() })))
+    const items = snap.docs.map(d => ({ id: d.id, ...d.data() }))
+    items.sort((a, b) => {
+      const dateCmp = (a.date || '').localeCompare(b.date || '')
+      if (dateCmp !== 0) return dateCmp
+      if (a.time && !b.time) return -1
+      if (!a.time && b.time) return 1
+      return (a.time || '').localeCompare(b.time || '')
+    })
+    setEvents(items)
   }
 
   async function addEvent(date) {

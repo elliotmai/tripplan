@@ -33,14 +33,22 @@ export default function TripsPage() {
       const snaps = await Promise.all(chunk.map(id => getDoc(doc(db, 'trips', id))))
       snaps.forEach(s => s.exists() && tripDocs.push({ id: s.id, ...s.data() }))
     }
-    tripDocs.sort((a, b) => (b.created_at?.seconds || 0) - (a.created_at?.seconds || 0))
     setTrips(tripDocs)
     setLoading(false)
   }
 
   const today = new Date().toISOString().slice(0, 10)
-  const upcoming = trips.filter(t => !t.end_date || t.end_date >= today)
-  const past = trips.filter(t => t.end_date && t.end_date < today)
+  const upcoming = trips
+    .filter(t => !t.end_date || t.end_date >= today)
+    .sort((a, b) => {
+      if (!a.start_date && !b.start_date) return 0
+      if (!a.start_date) return 1
+      if (!b.start_date) return -1
+      return a.start_date.localeCompare(b.start_date)
+    })
+  const past = trips
+    .filter(t => t.end_date && t.end_date < today)
+    .sort((a, b) => (b.end_date || '').localeCompare(a.end_date || ''))
 
   return (
     <div className="min-h-screen pb-safe" style={{ background: '#0a0908' }}>

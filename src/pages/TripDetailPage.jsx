@@ -3,20 +3,23 @@ import { useParams, useNavigate } from 'react-router-dom'
 import { doc, getDoc, collection, query, where, getDocs } from 'firebase/firestore'
 import { db } from '../lib/firebase'
 import { useAuth } from '../contexts/AuthContext'
+import { ensureTripFriendships } from '../lib/friends'
 import { format, parseISO, eachDayOfInterval } from 'date-fns'
 import { ArrowLeft, Pencil, MapPin, Calendar, Users, CalendarDays } from 'lucide-react'
 import ItineraryTab from '../components/ItineraryTab'
 import TravelersTab from '../components/TravelersTab'
 import PollsTab from '../components/PollsTab'
 import PhotosTab from '../components/PhotosTab'
+import DatesTab from '../components/DatesTab'
 import EditTripSheet from '../components/EditTripSheet'
 import CalendarSubscribeSheet from '../components/CalendarSubscribeSheet'
 
 const TABS = [
   { id: 'itinerary', label: 'Itinerary' },
+  { id: 'dates',     label: 'Dates' },
   { id: 'travelers', label: 'Travelers' },
-  { id: 'polls', label: 'Polls' },
-  { id: 'photos', label: 'Photos' },
+  { id: 'polls',     label: 'Polls' },
+  { id: 'photos',    label: 'Photos' },
 ]
 
 export default function TripDetailPage() {
@@ -62,6 +65,12 @@ export default function TripDetailPage() {
     )
     setMembers(memberData)
     setLoading(false)
+
+    // Auto-friend every trip mate (idempotent — only writes friendship docs that
+    // include the current user, so it stays inside the rules).
+    if (user?.id && memberData.length > 1) {
+      ensureTripFriendships(user.id, memberData.map(m => m.id), id).catch(() => {})
+    }
   }
 
   const isOwner = members.find(m => m.id === user?.id)?.role === 'owner'
@@ -201,6 +210,15 @@ export default function TripDetailPage() {
             sharedLegs={sharedLegs}
             sharedAccoms={sharedAccoms}
             currentUser={user}
+          />
+        )}
+        {activeTab === 'dates' && (
+          <DatesTab
+            tripId={id}
+            trip={trip}
+            members={members}
+            currentUser={user}
+            onTripUpdated={loadTrip}
           />
         )}
         {activeTab === 'travelers' && (

@@ -4,6 +4,7 @@ import AuthPage from './pages/AuthPage'
 import TripsPage from './pages/TripsPage'
 import TripDetailPage from './pages/TripDetailPage'
 import AccountPage from './pages/AccountPage'
+import FriendsPage from './pages/FriendsPage'
 
 function AppRoutes() {
   const { user, loading } = useAuth()
@@ -22,6 +23,7 @@ function AppRoutes() {
     <Routes>
       <Route path="/"          element={<TripsPage />} />
       <Route path="/trips/:id" element={<TripDetailPage />} />
+      <Route path="/friends"   element={<FriendsPage />} />
       <Route path="/account"   element={<AccountPage />} />
       <Route path="*"          element={<Navigate to="/" />} />
     </Routes>

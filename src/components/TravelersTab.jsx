@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import {
   collection, query, where, getDocs,
   addDoc, updateDoc, deleteDoc, doc, serverTimestamp,
@@ -10,8 +10,12 @@ import {
   membersWithTravel, SOURCES,
 } from '../lib/travel'
 import {
+  listFriendships, fetchProfiles, ensureTripFriendship, otherUid,
+  FRIENDSHIP_STATUS,
+} from '../lib/friends'
+import {
   Edit2, UserPlus, Plus, Trash2, ChevronDown, ChevronUp,
-  CalendarDays, Check, X, Plane, Building2, Users,
+  CalendarDays, Check, X, Plane, Building2, Users, Sparkles,
 } from 'lucide-react'
 import TimezonePicker from './TimezonePicker'
 
@@ -492,6 +496,7 @@ export default function TravelersTab({
   const [inviting, setInviting] = useState(false)
   const [inviteMsg, setInviteMsg] = useState('')
   const [showExport, setShowExport] = useState(false)
+  const [friendProfiles, setFriendProfiles] = useState([])  // accepted friends not in this trip
 
   // modal state
   const [legModal, setLegModal] = useState(null)        // { mode, initial, target }
@@ -499,6 +504,23 @@ export default function TravelersTab({
   const [saving, setSaving] = useState(false)
 
   const isOwner = members.find(m => m.id === currentUser?.id)?.role === 'owner'
+
+  // Load accepted friends not yet in this trip — used as invite suggestions.
+  useEffect(() => {
+    if (!isOwner || !currentUser?.id) return
+    let cancelled = false
+    ;(async () => {
+      const fs = await listFriendships(currentUser.id)
+      const accepted = fs.filter(f => f.status === FRIENDSHIP_STATUS.ACCEPTED)
+      const memberIds = new Set(members.map(m => m.id))
+      const candidateIds = accepted
+        .map(f => otherUid(f, currentUser.id))
+        .filter(uid => uid && !memberIds.has(uid))
+      const profs = await fetchProfiles(candidateIds)
+      if (!cancelled) setFriendProfiles(profs)
+    })()
+    return () => { cancelled = true }
+  }, [isOwner, currentUser?.id, members])
 
   const allLegs = useMemo(
     () => normalizeLegs({ legacyDetails: travelDetails, sharedLegs, members }),
@@ -513,6 +535,18 @@ export default function TravelersTab({
 
   // ── invite ─────────────────────────────────────────────────────────────────
 
+  async function addProfileToTrip(profile) {
+    await addDoc(collection(db, 'trip_members'), {
+      trip_id: tripId, user_id: profile.id, role: 'member', created_at: serverTimestamp(),
+    })
+    // Auto-friend: each existing member ensures they're friends with the newcomer.
+    // The current user can only write friendships they're part of, so we cover (me ↔ newcomer)
+    // here; other members will fill in their own pairs when they next open the trip.
+    if (currentUser?.id) {
+      ensureTripFriendship(currentUser.id, profile.id, tripId).catch(() => {})
+    }
+  }
+
   async function inviteMember() {
     setInviting(true); setInviteMsg('')
     const snap = await getDocs(
@@ -524,11 +558,16 @@ export default function TravelersTab({
       setInviteMsg(`${profile.full_name} is already in this trip.`)
       setInviting(false); return
     }
-    await addDoc(collection(db, 'trip_members'), {
-      trip_id: tripId, user_id: profile.id, role: 'member', created_at: serverTimestamp(),
-    })
+    await addProfileToTrip(profile)
     setInviteMsg(`${profile.full_name} added!`)
     setInviteEmail(''); setInviting(false); onUpdate()
+  }
+
+  async function inviteFriend(profile) {
+    setInviting(true); setInviteMsg('')
+    await addProfileToTrip(profile)
+    setInviteMsg(`${profile.full_name} added!`)
+    setInviting(false); onUpdate()
   }
 
   // ── add leg / accommodation ────────────────────────────────────────────────
@@ -760,21 +799,57 @@ export default function TravelersTab({
 
       {/* Invite */}
       {isOwner && (
-        <div className="glass rounded-2xl p-5 fade-in">
-          <h3 className="font-display text-lg font-light mb-3" style={{ color: '#e8d5a3' }}>Invite a Traveler</h3>
-          <div className="flex gap-2">
-            <input type="email" value={inviteEmail} onChange={e => setInviteEmail(e.target.value)}
-              placeholder="friend@email.com"
-              className="flex-1 px-4 py-3 rounded-xl text-sm outline-none"
-              style={{ background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(212,184,122,0.15)', color: '#d4cfc8' }} />
-            <button onClick={inviteMember} disabled={inviting || !inviteEmail}
-              className="px-4 py-3 rounded-xl flex items-center justify-center"
-              style={{ background: 'linear-gradient(135deg, #d4b87a 0%, #c19a4e 100%)', color: '#0a0908' }}>
-              <UserPlus size={16} />
-            </button>
+        <div className="glass rounded-2xl p-5 fade-in space-y-4">
+          <h3 className="font-display text-lg font-light" style={{ color: '#e8d5a3' }}>Invite a Traveler</h3>
+
+          {friendProfiles.length > 0 && (
+            <div>
+              <p className="text-xs tracking-widest uppercase mb-2 flex items-center gap-1.5"
+                style={{ color: '#5a5248' }}>
+                <Sparkles size={10} style={{ color: '#d4b87a' }} />
+                From your friends
+              </p>
+              <div className="flex flex-wrap gap-1.5">
+                {friendProfiles.map(p => (
+                  <button key={p.id} onClick={() => inviteFriend(p)} disabled={inviting}
+                    className="flex items-center gap-1.5 pl-1 pr-3 py-1 rounded-full text-xs transition-all active:scale-95"
+                    style={{
+                      background: 'rgba(212,184,122,0.08)',
+                      border: '1px solid rgba(212,184,122,0.2)',
+                      color: '#d4b87a',
+                    }}>
+                    <span className="w-5 h-5 rounded-full flex items-center justify-center font-medium flex-shrink-0"
+                      style={{ background: 'linear-gradient(135deg, #d4b87a 0%, #c19a4e 100%)', color: '#0a0908', fontSize: '10px' }}>
+                      {p.full_name?.[0]?.toUpperCase() || '?'}
+                    </span>
+                    {p.full_name?.split(' ')[0]}
+                    <Plus size={10} />
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+
+          <div>
+            <p className="text-xs tracking-widest uppercase mb-2" style={{ color: '#5a5248' }}>
+              {friendProfiles.length > 0 ? 'Or add by email' : 'Add by email'}
+            </p>
+            <div className="flex gap-2">
+              <input type="email" value={inviteEmail} onChange={e => setInviteEmail(e.target.value)}
+                onKeyDown={e => e.key === 'Enter' && inviteEmail && inviteMember()}
+                placeholder="friend@email.com"
+                className="flex-1 px-4 py-3 rounded-xl text-sm outline-none"
+                style={{ background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(212,184,122,0.15)', color: '#d4cfc8' }} />
+              <button onClick={inviteMember} disabled={inviting || !inviteEmail}
+                className="px-4 py-3 rounded-xl flex items-center justify-center"
+                style={{ background: 'linear-gradient(135deg, #d4b87a 0%, #c19a4e 100%)', color: '#0a0908' }}>
+                <UserPlus size={16} />
+              </button>
+            </div>
           </div>
+
           {inviteMsg && (
-            <p className="text-xs mt-2" style={{ color: inviteMsg.includes('added') ? '#8aab8e' : '#c47c5a' }}>
+            <p className="text-xs" style={{ color: inviteMsg.includes('added') ? '#8aab8e' : '#c47c5a' }}>
               {inviteMsg}
             </p>
           )}

@@ -23,6 +23,22 @@
         { "fieldPath": "trip_id", "order": "ASCENDING" },
         { "fieldPath": "poll_id", "order": "ASCENDING" }
       ]
+    },
+    {
+      "collectionGroup": "friendships",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "users",  "arrayConfig": "CONTAINS" },
+        { "fieldPath": "status", "order": "ASCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "date_availability",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "poll_id", "order": "ASCENDING" },
+        { "fieldPath": "user_id", "order": "ASCENDING" }
+      ]
     }
   ],
   "fieldOverrides": []

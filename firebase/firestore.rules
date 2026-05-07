@@ -86,5 +86,37 @@ service cloud.firestore {
       allow create:       if request.auth != null
                           && request.resource.data.created_by == request.auth.uid;
     }
+
+    // FRIENDSHIPS
+    // Doc id = sorted [uidA, uidB].join('_'); users[] holds both uids.
+    // Each client may only write a friendship that contains itself.
+    match /friendships/{id} {
+      // Allow reads of non-existent docs too — the client uses getDoc() to
+      // detect an existing pending request before creating a new one.
+      allow read:   if request.auth != null
+                    && (resource == null
+                        || request.auth.uid in resource.data.users);
+      allow create: if request.auth != null
+                    && request.auth.uid in request.resource.data.users
+                    && request.resource.data.users.size() == 2;
+      allow update, delete: if request.auth != null
+                    && request.auth.uid in resource.data.users;
+    }
+
+    // DATE POLLS — When2Meet-style availability for a trip
+    match /date_polls/{pollId} {
+      allow read, create:   if request.auth != null;
+      allow update, delete: if request.auth != null
+                            && resource.data.created_by == request.auth.uid;
+    }
+
+    // DATE AVAILABILITY — one doc per (poll, user) holding selected dates[]
+    match /date_availability/{docId} {
+      allow read:   if request.auth != null;
+      allow create: if request.auth != null
+                    && request.resource.data.user_id == request.auth.uid;
+      allow update, delete: if request.auth != null
+                    && resource.data.user_id == request.auth.uid;
+    }
   }
 }

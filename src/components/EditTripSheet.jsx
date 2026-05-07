@@ -1,8 +1,12 @@
 import { useState } from 'react'
-import { doc, updateDoc, serverTimestamp } from 'firebase/firestore'
+import { useNavigate } from 'react-router-dom'
+import {
+  doc, updateDoc, deleteDoc, collection, query, where, getDocs,
+  serverTimestamp,
+} from 'firebase/firestore'
 import { db } from '../lib/firebase'
 import { geocodeCity } from '../lib/weather'
-import { X, Smile } from 'lucide-react'
+import { X, Smile, Trash2, AlertTriangle } from 'lucide-react'
 import TimezonePicker from './TimezonePicker'
 import { nearestTimezone } from '../lib/timezones'
 
@@ -22,6 +26,7 @@ const EMOJI_CATEGORIES = [
 ]
 
 export default function EditTripSheet({ trip, onClose, onSaved }) {
+  const navigate = useNavigate()
   const [form, setForm] = useState({
     name:         trip.name        || '',
     destination:  trip.destination || '',
@@ -35,6 +40,8 @@ export default function EditTripSheet({ trip, onClose, onSaved }) {
   const [showPicker, setShowPicker]   = useState(false)
   const [pickerCat, setPickerCat]     = useState(0)
   const [customInput, setCustomInput] = useState('')
+  const [showDelete, setShowDelete]   = useState(false)
+  const [deleting, setDeleting]       = useState(false)
 
   function handleCustomInput(val) {
     setCustomInput(val)
@@ -66,6 +73,31 @@ export default function EditTripSheet({ trip, onClose, onSaved }) {
     setSaving(false)
     onSaved()
     onClose()
+  }
+
+  // Cascade-delete the trip plus the bits whose rules let us reach across users:
+  // trip_members, date_polls (and their availability docs). Per-user content
+  // (events, polls, photos, legs, accoms) becomes invisible orphans because
+  // every list query in the app filters by trip_id.
+  async function handleDelete() {
+    setDeleting(true)
+    try {
+      const [memSnap, datePollSnap, dateAvailSnap] = await Promise.all([
+        getDocs(query(collection(db, 'trip_members'),      where('trip_id', '==', trip.id))),
+        getDocs(query(collection(db, 'date_polls'),        where('trip_id', '==', trip.id))),
+        getDocs(query(collection(db, 'date_availability'), where('trip_id', '==', trip.id))),
+      ])
+      await Promise.all([
+        ...memSnap.docs.map(d       => deleteDoc(d.ref)),
+        ...dateAvailSnap.docs.map(d => deleteDoc(d.ref)),
+        ...datePollSnap.docs.map(d  => deleteDoc(d.ref)),
+      ])
+      await deleteDoc(doc(db, 'trips', trip.id))
+      navigate('/')
+    } catch (e) {
+      setError(e.message?.replace('Firebase: ', '') || 'Could not delete trip.')
+      setDeleting(false)
+    }
   }
 
   return (
@@ -193,6 +225,95 @@ export default function EditTripSheet({ trip, onClose, onSaved }) {
             className="w-full py-4 rounded-2xl font-medium tracking-wider transition-all active:scale-95"
             style={{ background: saving ? '#3d3830' : 'linear-gradient(135deg, #d4b87a 0%, #c19a4e 100%)', color: '#0a0908' }}>
             {saving ? 'Saving…' : 'Save Changes'}
+          </button>
+
+          {/* Danger zone */}
+          <div className="pt-4 mt-2" style={{ borderTop: '1px solid rgba(196,124,90,0.15)' }}>
+            <p className="text-xs tracking-widest uppercase mb-2" style={{ color: '#5a5248' }}>
+              Danger Zone
+            </p>
+            <button onClick={() => setShowDelete(true)}
+              className="w-full flex items-center justify-center gap-2 py-3 rounded-xl text-sm transition-all active:scale-95"
+              style={{
+                background: 'rgba(196,124,90,0.08)',
+                border: '1px solid rgba(196,124,90,0.25)',
+                color: '#c47c5a',
+              }}>
+              <Trash2 size={13} /> Delete this trip
+            </button>
+          </div>
+        </div>
+
+        {showDelete && (
+          <DeleteTripModal
+            tripName={trip.name}
+            deleting={deleting}
+            onCancel={() => setShowDelete(false)}
+            onConfirm={handleDelete}
+          />
+        )}
+      </div>
+    </div>
+  )
+}
+
+function DeleteTripModal({ tripName, deleting, onCancel, onConfirm }) {
+  const [confirmText, setConfirmText] = useState('')
+  const armed = confirmText.trim().toLowerCase() === (tripName || '').trim().toLowerCase()
+
+  return (
+    <div className="fixed inset-0 z-[60] flex items-end justify-center"
+      style={{ background: 'rgba(0,0,0,0.8)', backdropFilter: 'blur(6px)' }}>
+      <div className="w-full max-w-lg rounded-t-3xl p-6 pb-10 slide-up"
+        style={{ background: '#1c1916', border: '1px solid rgba(196,124,90,0.25)' }}>
+        <div className="flex items-start justify-between mb-5">
+          <div className="flex items-center gap-3">
+            <div className="w-10 h-10 rounded-xl flex items-center justify-center flex-shrink-0"
+              style={{ background: 'rgba(196,124,90,0.15)' }}>
+              <AlertTriangle size={18} style={{ color: '#c47c5a' }} />
+            </div>
+            <div>
+              <p className="font-medium text-sm" style={{ color: '#e8d5a3' }}>Delete trip</p>
+              <p className="text-xs mt-0.5" style={{ color: '#5a5248' }}>This cannot be undone</p>
+            </div>
+          </div>
+          <button onClick={onCancel} style={{ color: '#5a5248' }}><X size={16} /></button>
+        </div>
+
+        <p className="text-sm mb-5" style={{ color: '#b5aea4' }}>
+          The trip, all members, and date polls will be deleted permanently.
+          Everyone in this trip will lose access immediately.
+        </p>
+
+        <p className="text-xs tracking-widest uppercase mb-2" style={{ color: '#5a5248' }}>
+          Type <span style={{ color: '#c47c5a' }}>{tripName}</span> to confirm
+        </p>
+        <input
+          autoFocus
+          value={confirmText}
+          onChange={e => setConfirmText(e.target.value)}
+          placeholder={tripName}
+          className="w-full px-4 py-3 rounded-xl text-sm outline-none mb-4"
+          style={{
+            background: 'rgba(255,255,255,0.04)',
+            border: '1px solid rgba(196,124,90,0.3)',
+            color: '#d4cfc8',
+          }}
+        />
+
+        <div className="flex gap-3">
+          <button onClick={onCancel}
+            className="flex-1 py-3 rounded-xl text-sm"
+            style={{ background: 'rgba(255,255,255,0.05)', color: '#5a5248' }}>
+            Cancel
+          </button>
+          <button onClick={onConfirm} disabled={!armed || deleting}
+            className="flex-1 py-3 rounded-xl text-sm font-medium transition-all active:scale-95"
+            style={{
+              background: !armed || deleting ? '#3d3830' : 'rgba(196,124,90,0.85)',
+              color: !armed || deleting ? '#5a5248' : '#fff',
+            }}>
+            {deleting ? 'Deleting…' : 'Delete trip'}
           </button>
         </div>
       </div>

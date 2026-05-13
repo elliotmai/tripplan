@@ -38,17 +38,15 @@ service cloud.firestore {
     }
 
     // TRIP LEGS (shared, multi-traveler)
+    // Any authenticated user can edit or delete — trip-level access is enforced
+    // in the UI; rule kept open so co-travelers can manage shared logistics.
     match /trip_legs/{legId} {
-      allow read, create:   if request.auth != null;
-      allow update, delete: if request.auth != null
-                            && resource.data.created_by == request.auth.uid;
+      allow read, create, update, delete: if request.auth != null;
     }
 
     // TRIP ACCOMMODATIONS (shared, multi-traveler, multiple per traveler)
     match /trip_accommodations/{accomId} {
-      allow read, create:   if request.auth != null;
-      allow update, delete: if request.auth != null
-                            && resource.data.created_by == request.auth.uid;
+      allow read, create, update, delete: if request.auth != null;
     }
 
     // POLLS

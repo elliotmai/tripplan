@@ -36,8 +36,22 @@ export default function TripDetailPage() {
   const [loading, setLoading] = useState(true)
   const [showEdit, setShowEdit] = useState(false)
   const [showSubscribe, setShowSubscribe] = useState(false)
+  const [pollUnreadCount, setPollUnreadCount] = useState(0)
 
   useEffect(() => { loadTrip() }, [id])
+  useEffect(() => { if (user?.id) refreshPollUnread() }, [id, user?.id])
+
+  async function refreshPollUnread() {
+    if (!user?.id) return
+    const [pollSnap, voteSnap] = await Promise.all([
+      getDocs(query(collection(db, 'polls'),      where('trip_id', '==', id))),
+      getDocs(query(collection(db, 'poll_votes'), where('trip_id', '==', id))),
+    ])
+    const myPollIds = new Set(
+      voteSnap.docs.filter(d => d.data().user_id === user.id).map(d => d.data().poll_id)
+    )
+    setPollUnreadCount(pollSnap.docs.filter(d => !myPollIds.has(d.id)).length)
+  }
 
   async function loadTrip() {
     setLoading(true)
@@ -74,6 +88,7 @@ export default function TripDetailPage() {
   }
 
   const isOwner = members.find(m => m.id === user?.id)?.role === 'owner'
+  const isMember = members.some(m => m.id === user?.id)
 
   const days = trip?.start_date && trip?.end_date
     ? eachDayOfInterval({ start: parseISO(trip.start_date), end: parseISO(trip.end_date) })
@@ -132,7 +147,7 @@ export default function TripDetailPage() {
               <CalendarDays size={12} />
               Subscribe
             </button>
-            {isOwner && (
+            {isMember && (
               <button
                 onClick={() => setShowEdit(true)}
                 className="flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs transition-all active:scale-95"
@@ -182,19 +197,35 @@ export default function TripDetailPage() {
           borderBottom: '1px solid rgba(212,184,122,0.08)',
         }}>
         <div className="flex gap-1">
-          {TABS.map(tab => (
-            <button
-              key={tab.id}
-              onClick={() => setActiveTab(tab.id)}
-              className="flex-1 py-2 rounded-xl text-xs font-medium tracking-wide transition-all"
-              style={{
-                background: activeTab === tab.id ? 'rgba(212,184,122,0.15)' : 'transparent',
-                color: activeTab === tab.id ? '#d4b87a' : '#5a5248',
-                border: activeTab === tab.id ? '1px solid rgba(212,184,122,0.2)' : '1px solid transparent',
-              }}>
-              {tab.label}
-            </button>
-          ))}
+          {TABS.map(tab => {
+            const showPollBadge = tab.id === 'polls' && pollUnreadCount > 0
+            return (
+              <button
+                key={tab.id}
+                onClick={() => setActiveTab(tab.id)}
+                className="flex-1 py-2 rounded-xl text-xs font-medium tracking-wide transition-all relative"
+                style={{
+                  background: activeTab === tab.id ? 'rgba(212,184,122,0.15)' : 'transparent',
+                  color: activeTab === tab.id ? '#d4b87a' : '#5a5248',
+                  border: activeTab === tab.id ? '1px solid rgba(212,184,122,0.2)' : '1px solid transparent',
+                }}>
+                <span className="inline-flex items-center justify-center gap-1.5">
+                  {tab.label}
+                  {showPollBadge && (
+                    <span
+                      className="inline-flex items-center justify-center rounded-full text-[10px] font-semibold leading-none"
+                      style={{
+                        minWidth: 16, height: 16, padding: '0 5px',
+                        background: 'linear-gradient(135deg, #d4b87a 0%, #c19a4e 100%)',
+                        color: '#0a0908',
+                      }}>
+                      {pollUnreadCount}
+                    </span>
+                  )}
+                </span>
+              </button>
+            )
+          })}
         </div>
       </div>
 
@@ -234,7 +265,7 @@ export default function TripDetailPage() {
           />
         )}
         {activeTab === 'polls' && (
-          <PollsTab tripId={id} currentUser={user} />
+          <PollsTab tripId={id} currentUser={user} onPollsChanged={refreshPollUnread} />
         )}
         {activeTab === 'photos' && (
           <PhotosTab tripId={id} />
@@ -245,6 +276,7 @@ export default function TripDetailPage() {
       {showEdit && (
         <EditTripSheet
           trip={trip}
+          isOwner={isOwner}
           onClose={() => setShowEdit(false)}
           onSaved={loadTrip}
         />

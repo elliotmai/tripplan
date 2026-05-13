@@ -25,7 +25,7 @@ const EMOJI_CATEGORIES = [
   { label: 'Objects',    emojis: ['📸','🎭','🎨','🎬','🎤','🎧','🎼','📷','🔭','🔬','💎','👑','🗺️','🧭','⌚','💼','🎒','👜','🧳','☂️','🌂','🎁','🏮','🪔','🕯️','💡','🔦','📚','📖','✏️'] },
 ]
 
-export default function EditTripSheet({ trip, onClose, onSaved }) {
+export default function EditTripSheet({ trip, isOwner = false, onClose, onSaved }) {
   const navigate = useNavigate()
   const [form, setForm] = useState({
     name:         trip.name        || '',
@@ -227,21 +227,23 @@ export default function EditTripSheet({ trip, onClose, onSaved }) {
             {saving ? 'Saving…' : 'Save Changes'}
           </button>
 
-          {/* Danger zone */}
-          <div className="pt-4 mt-2" style={{ borderTop: '1px solid rgba(196,124,90,0.15)' }}>
-            <p className="text-xs tracking-widest uppercase mb-2" style={{ color: '#5a5248' }}>
-              Danger Zone
-            </p>
-            <button onClick={() => setShowDelete(true)}
-              className="w-full flex items-center justify-center gap-2 py-3 rounded-xl text-sm transition-all active:scale-95"
-              style={{
-                background: 'rgba(196,124,90,0.08)',
-                border: '1px solid rgba(196,124,90,0.25)',
-                color: '#c47c5a',
-              }}>
-              <Trash2 size={13} /> Delete this trip
-            </button>
-          </div>
+          {/* Danger zone — only the trip owner can delete */}
+          {isOwner && (
+            <div className="pt-4 mt-2" style={{ borderTop: '1px solid rgba(196,124,90,0.15)' }}>
+              <p className="text-xs tracking-widest uppercase mb-2" style={{ color: '#5a5248' }}>
+                Danger Zone
+              </p>
+              <button onClick={() => setShowDelete(true)}
+                className="w-full flex items-center justify-center gap-2 py-3 rounded-xl text-sm transition-all active:scale-95"
+                style={{
+                  background: 'rgba(196,124,90,0.08)',
+                  border: '1px solid rgba(196,124,90,0.25)',
+                  color: '#c47c5a',
+                }}>
+                <Trash2 size={13} /> Delete this trip
+              </button>
+            </div>
+          )}
         </div>
 
         {showDelete && (

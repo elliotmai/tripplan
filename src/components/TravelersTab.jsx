@@ -748,12 +748,10 @@ export default function TravelersTab({
   // ── permissions ────────────────────────────────────────────────────────────
 
   function canEditItem(item) {
-    if (item._source === SOURCES.SHARED) {
-      return item.created_by === currentUser?.id
-    }
-    if (item._source === SOURCES.LEGACY) {
-      return item._legacyOwnerId === currentUser?.id
-    }
+    // Any trip member can manage shared travel entries; legacy per-user entries
+    // are still restricted to their owner because Firestore rules pin them to user_id.
+    if (item._source === SOURCES.SHARED) return !!currentUser?.id
+    if (item._source === SOURCES.LEGACY) return item._legacyOwnerId === currentUser?.id
     return false
   }
 

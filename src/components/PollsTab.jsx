@@ -3,7 +3,7 @@ import { collection, query, where, getDocs, addDoc, deleteDoc, doc, serverTimest
 import { db } from '../lib/firebase'
 import { Plus, Check, ChevronDown, ChevronUp } from 'lucide-react'
 
-export default function PollsTab({ tripId, currentUser }) {
+export default function PollsTab({ tripId, currentUser, onPollsChanged }) {
   const [polls, setPolls]     = useState([])
   const [votes, setVotes]     = useState([])
   const [showNew, setShowNew] = useState(false)
@@ -37,6 +37,7 @@ export default function PollsTab({ tripId, currentUser }) {
     const pollRef = await addDoc(collection(db, 'polls'), { trip_id: tripId, question: form.question, created_by: currentUser.id, created_at: serverTimestamp() })
     await Promise.all(validOptions.map(text => addDoc(collection(db, 'poll_options'), { poll_id: pollRef.id, text })))
     setForm({ question: '', options: ['', ''] }); setShowNew(false); setSaving(false); loadPolls()
+    onPollsChanged?.()
   }
 
   async function vote(pollId, optionId) {
@@ -45,6 +46,7 @@ export default function PollsTab({ tripId, currentUser }) {
     await Promise.all(existing.map(v => deleteDoc(doc(db, 'poll_votes', v.id))))
     await addDoc(collection(db, 'poll_votes'), { poll_id: pollId, option_id: optionId, user_id: currentUser.id, trip_id: tripId, created_at: serverTimestamp() })
     loadPolls()
+    onPollsChanged?.()
   }
 
   return (

@@ -37,6 +37,11 @@ const TRANSPORT_META = {
   other: { icon: '🛸', color: '#9a8ab5' },
 }
 
+// Default times used to slot check-ins / check-outs into the day's order when
+// no explicit time was provided on the accommodation.
+const DEFAULT_CHECKIN_TIME  = '16:00'  // 4:00 PM
+const DEFAULT_CHECKOUT_TIME = '11:00'  // 11:00 AM
+
 // assigned_to is now an array of member IDs, or [] for "none", or ['__all__'] sentinel for "everyone"
 // We store the actual IDs always — '__all__' is only a UI concept resolved before saving.
 const BLANK_FORM = {
@@ -54,6 +59,19 @@ function formatTime(dt) {
   try {
     return new Date(dt).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' })
   } catch { return null }
+}
+
+// Format a HH:MM string (e.g. "16:00") as "4:00 PM".
+function formatHM(hm) {
+  if (!hm) return ''
+  const [hRaw, mRaw] = hm.split(':')
+  const h = Number(hRaw), m = Number(mRaw || 0)
+  if (Number.isNaN(h)) return ''
+  const d = new Date(2000, 0, 1, h, m)
+  return d.toLocaleTimeString('en-US', {
+    hour: 'numeric',
+    minute: m === 0 ? undefined : '2-digit',
+  })
 }
 
 function formatTimeRange(start, end) {
@@ -125,6 +143,77 @@ function buildTravelByDate(legs) {
   Object.keys(byDate).forEach(d => {
     byDate[d].sort((a, b) => (a._sortAt || '').localeCompare(b._sortAt || ''))
   })
+  return byDate
+}
+
+// ─── Build per-date accommodation cards ──────────────────────────────────────
+// Each accommodation with check_in / check_out dates produces one card per night
+// it covers: kind 'checkin' on the arrival day, 'stay' on intermediate nights,
+// and 'checkout' on the departure day. Accommodations without dates (legacy)
+// are skipped here — they still appear in the Travelers tab.
+
+function buildAccomsByDate(accoms) {
+  const byDate = {}
+  function push(dateStr, card) {
+    if (!dateStr) return
+    if (!byDate[dateStr]) byDate[dateStr] = []
+    byDate[dateStr].push(card)
+  }
+
+  accoms.forEach(accom => {
+    if (!accom.check_in || !accom.check_out) return
+    const start = accom.check_in.slice(0, 10)
+    const end = accom.check_out.slice(0, 10)
+    if (!start || !end || end < start) return
+
+    const firstNames = (accom.traveler_names || []).map(n => n.split(' ')[0])
+    const travelerName = firstNames.length === 0 ? 'Someone'
+                      : firstNames.length === 1 ? firstNames[0]
+                      : firstNames.length === 2 ? firstNames.join(' & ')
+                      : `${firstNames[0]} +${firstNames.length - 1}`
+
+    // Generate every date from check_in to check_out (inclusive)
+    const dates = []
+    const cur = new Date(start + 'T12:00:00')
+    const last = new Date(end + 'T12:00:00')
+    while (cur <= last) {
+      dates.push(format(cur, 'yyyy-MM-dd'))
+      cur.setDate(cur.getDate() + 1)
+    }
+
+    const explicitCheckinTime  = accom.check_in_time || ''
+    const explicitCheckoutTime = accom.check_out_time || ''
+
+    dates.forEach((dateStr, idx) => {
+      let kind = 'stay'
+      if (idx === 0) kind = 'checkin'
+      else if (idx === dates.length - 1) kind = 'checkout'
+
+      // Attach a sort time only to boundary days (check-in / check-out).
+      // Middle "stay" nights have no time — they render as context cards above
+      // the chronological list.
+      let time = ''
+      let timeIsDefault = false
+      if (kind === 'checkin') {
+        time = explicitCheckinTime || DEFAULT_CHECKIN_TIME
+        timeIsDefault = !explicitCheckinTime
+      } else if (kind === 'checkout') {
+        time = explicitCheckoutTime || DEFAULT_CHECKOUT_TIME
+        timeIsDefault = !explicitCheckoutTime
+      }
+
+      push(dateStr, {
+        kind,
+        name: accom.name,
+        address: accom.address,
+        travelerName,
+        notes: accom.notes,
+        time,
+        timeIsDefault,
+      })
+    })
+  })
+
   return byDate
 }
 
@@ -664,6 +753,7 @@ export default function ItineraryTab({
   const allLegs   = normalizeLegs({ legacyDetails: travelDetails, sharedLegs, members })
   const allAccoms = normalizeAccommodations({ legacyDetails: travelDetails, sharedAccoms, members })
   const travelByDate = buildTravelByDate(allLegs)
+  const accomsByDate = buildAccomsByDate(allAccoms)
   const allMemberIds = members.map(m => m.id)
 
   useEffect(() => {
@@ -777,8 +867,34 @@ export default function ItineraryTab({
         const dayEvents = events.filter(e => e.date === dateStr)
         const dayWeather = weather.find(w => w.date === dateStr)
         const dayTravel = travelByDate[dateStr] || []
-        const totalItems = dayEvents.length + dayTravel.length
+        const dayAccoms = accomsByDate[dateStr] || []
+        // Middle "stay" nights have no time — render as context cards above
+        // the chronological list. Check-ins and check-outs are interleaved
+        // with travel + events using their (real or default) time.
+        const dayStays     = dayAccoms.filter(a => a.kind === 'stay')
+        const dayCheckins  = dayAccoms.filter(a => a.kind === 'checkin')
+        const dayCheckouts = dayAccoms.filter(a => a.kind === 'checkout')
+        const totalItems = dayEvents.length + dayTravel.length + dayAccoms.length
         const isOpen = expandedDay === idx
+
+        // Merge travel + events + check-ins + check-outs into one chronological
+        // list. Travel cards carry a full ISO timestamp in _sortAt; events and
+        // accommodation cards carry HH:MM. Missing times sort to the bottom.
+        const chronoItems = []
+        dayTravel.forEach((card, ci) => {
+          const t = (card._sortAt || '').slice(11, 16) || '99:99'
+          chronoItems.push({ kind: 'travel', card, _sort: t, _key: `t-${ci}` })
+        })
+        dayEvents.forEach(event => {
+          chronoItems.push({ kind: 'event', event, _sort: event.time || '99:99', _key: `e-${event.id}` })
+        })
+        dayCheckins.forEach((card, ci) => {
+          chronoItems.push({ kind: 'checkin', card, _sort: card.time || '99:99', _key: `ci-${ci}` })
+        })
+        dayCheckouts.forEach((card, ci) => {
+          chronoItems.push({ kind: 'checkout', card, _sort: card.time || '99:99', _key: `co-${ci}` })
+        })
+        chronoItems.sort((a, b) => a._sort.localeCompare(b._sort))
 
         return (
           <div key={dateStr} className="glass rounded-2xl overflow-hidden fade-in"
@@ -817,6 +933,12 @@ export default function ItineraryTab({
                       <span className="flex items-center gap-1 text-xs px-1.5 py-0.5 rounded-full"
                         style={{ background: 'rgba(122,154,181,0.15)', color: '#7a9ab5' }}>
                         {[...new Set(dayTravel.map(t => t.meta.icon))].join('')} {dayTravel.length} travel
+                      </span>
+                    )}
+                    {dayAccoms.length > 0 && (
+                      <span className="flex items-center gap-1 text-xs px-1.5 py-0.5 rounded-full"
+                        style={{ background: 'rgba(138,171,142,0.15)', color: '#8aab8e' }}>
+                        🏨 {dayAccoms.length} stay{dayAccoms.length !== 1 ? 's' : ''}
                       </span>
                     )}
                     {totalItems === 0 && !dayWeather && (
@@ -860,40 +982,48 @@ export default function ItineraryTab({
                   </div>
                 )}
 
-                {dayTravel.length > 0 && (
+                {/* Middle "stay" nights: context cards above the chronological list */}
+                {dayStays.length > 0 && (
                   <div className="space-y-1.5">
-                    <p className="text-xs tracking-widest uppercase px-1 pt-1" style={{ color: '#5a5248' }}>Travel</p>
-                    {dayTravel.map((card, ci) => <TravelCard key={ci} card={card} />)}
+                    {dayStays.map((card, ci) => <AccommodationCard key={`s-${ci}`} card={card} />)}
                   </div>
                 )}
 
-                {dayEvents.length > 0 && (
+                {/* Travel, events, check-ins and check-outs, interleaved by time */}
+                {chronoItems.length > 0 && (
                   <div className="space-y-1.5">
-                    {dayTravel.length > 0 && (
-                      <p className="text-xs tracking-widest uppercase px-1 pt-1" style={{ color: '#5a5248' }}>Events</p>
-                    )}
-                    {dayEvents.map(event =>
-                      editingId === event.id ? (
+                    {chronoItems.map(item => {
+                      if (item.kind === 'travel') {
+                        return <TravelCard key={item._key} card={item.card} />
+                      }
+                      if (item.kind === 'checkin') {
+                        return <AccommodationCard key={item._key} card={item.card} />
+                      }
+                      if (item.kind === 'checkout') {
+                        return <CheckoutLine key={item._key} card={item.card} />
+                      }
+                      // event
+                      return editingId === item.event.id ? (
                         <EventEditForm
-                          key={event.id}
+                          key={item._key}
                           form={editForm}
                           setForm={setEditForm}
                           members={members}
                           saving={saving}
-                          onSave={() => saveEdit(event.id)}
+                          onSave={() => saveEdit(item.event.id)}
                           onCancel={() => setEditingId(null)}
                         />
                       ) : (
                         <EventItem
-                          key={event.id}
-                          event={event}
+                          key={item._key}
+                          event={item.event}
                           members={members}
-                          onEdit={() => startEdit(event)}
-                          onDelete={() => deleteEvent(event.id)}
-                          canEdit={event.created_by === currentUser.id}
+                          onEdit={() => startEdit(item.event)}
+                          onDelete={() => deleteEvent(item.event.id)}
+                          canEdit={true}
                         />
                       )
-                    )}
+                    })}
                   </div>
                 )}
 
@@ -999,6 +1129,72 @@ function TravelCard({ card }) {
           {card.arrive_time && <span className="flex items-center gap-1 text-xs" style={{ color: '#5a5248' }}><Clock size={8} />{card.arrive_time}</span>}
         </div>
       )}
+    </div>
+  )
+}
+
+// ─── Accommodation card ──────────────────────────────────────────────────────
+
+const ACCOM_KIND_META = {
+  checkin:  { icon: '🏨', label: 'Check in',   color: '#7a9ab5' },
+  stay:     { icon: '🛏️', label: 'Staying at', color: '#8aab8e' },
+  checkout: { icon: '🚪', label: 'Check out',  color: '#c47c5a' },
+}
+
+function AccommodationCard({ card }) {
+  const meta = ACCOM_KIND_META[card.kind] || ACCOM_KIND_META.stay
+  const c = meta.color
+  const timeLabel = card.time ? formatHM(card.time) : ''
+  return (
+    <div className="px-3 py-2.5 rounded-xl" style={{ background: `${c}12`, border: `1px solid ${c}28` }}>
+      <div className="flex items-start gap-2">
+        <span className="text-base flex-shrink-0">{meta.icon}</span>
+        <div className="flex-1 min-w-0">
+          <div className="flex items-center gap-2 flex-wrap">
+            <span className="text-xs uppercase tracking-wider" style={{ color: c }}>{meta.label}</span>
+            {timeLabel && (
+              <span className="flex items-center gap-1 text-xs"
+                style={{ color: card.timeIsDefault ? '#5a5248' : '#b5aea4' }}
+                title={card.timeIsDefault ? 'Default check-in time — edit the accommodation to set your own' : undefined}>
+                <Clock size={9} />{timeLabel}
+              </span>
+            )}
+            <span className="text-xs" style={{ color: '#5a5248' }}>· {card.travelerName}</span>
+          </div>
+          <p className="text-xs font-medium truncate mt-0.5" style={{ color: '#d4cfc8' }}>
+            {card.name || 'Accommodation'}
+          </p>
+          {card.address && (
+            <p className="text-xs flex items-center gap-1 mt-0.5 truncate" style={{ color: '#5a5248' }}>
+              <MapPin size={8} />{card.address}
+            </p>
+          )}
+        </div>
+      </div>
+    </div>
+  )
+}
+
+// Thin one-line strip used for checkouts — less visual weight than a card,
+// since "leaving the hotel" is usually just a side-note to the rest of the day.
+function CheckoutLine({ card }) {
+  const meta = ACCOM_KIND_META.checkout
+  const timeLabel = card.time ? formatHM(card.time) : ''
+  return (
+    <div className="flex items-center gap-2 px-2 py-1 text-xs">
+      <span className="text-xs flex-shrink-0">{meta.icon}</span>
+      <span className="uppercase tracking-wider flex-shrink-0" style={{ color: meta.color }}>{meta.label}</span>
+      {timeLabel && (
+        <span className="flex items-center gap-1 flex-shrink-0"
+          style={{ color: card.timeIsDefault ? '#5a5248' : '#b5aea4' }}
+          title={card.timeIsDefault ? 'Default check-out time — edit the accommodation to set your own' : undefined}>
+          <Clock size={9} />{timeLabel}
+        </span>
+      )}
+      <span className="truncate" style={{ color: '#b5aea4' }}>
+        {card.name || 'Accommodation'}
+      </span>
+      <span className="flex-shrink-0" style={{ color: '#5a5248' }}>· {card.travelerName}</span>
     </div>
   )
 }

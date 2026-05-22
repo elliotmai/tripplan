@@ -9,7 +9,10 @@
 //     trip_legs/{docId}            = { trip_id, traveler_ids: [], transport, number, from, to,
 //                                      depart_at, arrive_at, depart_tz, arrive_tz, notes, created_by }
 //     trip_accommodations/{docId}  = { trip_id, traveler_ids: [], name, address, check_in,
-//                                      check_out, notes, created_by }
+//                                      check_in_time, check_out, check_out_time, notes, created_by }
+//                                    check_in/check_out are date-only (YYYY-MM-DD); the *_time
+//                                    fields are optional HH:MM strings used to slot the events
+//                                    into the itinerary's chronological order.
 //
 // Helpers below produce a single normalized list of legs / accommodations from both
 // shapes, each entry tagged with its source so callers can route edits/deletes.
@@ -61,7 +64,9 @@ export function normalizeAccommodations({ legacyDetails = [], sharedAccoms = [],
         name: detail.accommodation || '',
         address: detail.accommodation_address || '',
         check_in: '',
+        check_in_time: '',
         check_out: '',
+        check_out_time: '',
         notes: detail.notes || '',
         _source: LEGACY,
         _legacyDocId: detail._docId,
@@ -77,7 +82,9 @@ export function normalizeAccommodations({ legacyDetails = [], sharedAccoms = [],
       name: accom.name || '',
       address: accom.address || '',
       check_in: accom.check_in || '',
+      check_in_time: accom.check_in_time || '',
       check_out: accom.check_out || '',
+      check_out_time: accom.check_out_time || '',
       notes: accom.notes || '',
       created_by: accom.created_by,
       _source: SHARED,

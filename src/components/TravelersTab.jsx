@@ -41,7 +41,9 @@ const BLANK_LEG_FORM = {
 }
 
 const BLANK_ACCOM_FORM = {
-  name: '', address: '', check_in: '', check_out: '',
+  name: '', address: '',
+  check_in: '', check_in_time: '',
+  check_out: '', check_out_time: '',
   notes: '', traveler_ids: [],
 }
 
@@ -326,17 +328,38 @@ function AccommodationModal({ initial, members, onSave, onClose, saving, mode })
           </InlineField>
 
           <div className="grid grid-cols-2 gap-3">
-            <InlineField label="Check-in">
-              <input type="date" value={form.check_in} onChange={e => update('check_in', e.target.value)}
-                className="w-full bg-transparent text-xs outline-none"
-                style={{ color: '#d4cfc8', background: 'transparent' }} />
-            </InlineField>
-            <InlineField label="Check-out">
-              <input type="date" value={form.check_out} onChange={e => update('check_out', e.target.value)}
-                className="w-full bg-transparent text-xs outline-none"
-                style={{ color: '#d4cfc8', background: 'transparent' }} />
-            </InlineField>
+            <div className="space-y-2">
+              <InlineField label="Check-in date">
+                <input type="date" value={form.check_in} onChange={e => update('check_in', e.target.value)}
+                  className="w-full bg-transparent text-xs outline-none"
+                  style={{ color: '#d4cfc8', background: 'transparent' }} />
+              </InlineField>
+              <InlineField label="Check-in time (optional)">
+                <input type="time" value={form.check_in_time}
+                  onChange={e => update('check_in_time', e.target.value)}
+                  placeholder="4:00 PM"
+                  className="w-full bg-transparent text-xs outline-none"
+                  style={{ color: '#d4cfc8', background: 'transparent' }} />
+              </InlineField>
+            </div>
+            <div className="space-y-2">
+              <InlineField label="Check-out date">
+                <input type="date" value={form.check_out} onChange={e => update('check_out', e.target.value)}
+                  className="w-full bg-transparent text-xs outline-none"
+                  style={{ color: '#d4cfc8', background: 'transparent' }} />
+              </InlineField>
+              <InlineField label="Check-out time (optional)">
+                <input type="time" value={form.check_out_time}
+                  onChange={e => update('check_out_time', e.target.value)}
+                  placeholder="11:00 AM"
+                  className="w-full bg-transparent text-xs outline-none"
+                  style={{ color: '#d4cfc8', background: 'transparent' }} />
+              </InlineField>
+            </div>
           </div>
+          <p className="text-xs -mt-2" style={{ color: '#3d3830' }}>
+            Defaults to 4:00 PM check-in and 11:00 AM check-out if left blank.
+          </p>
 
           <InlineField label="Notes (optional)">
             <input value={form.notes} onChange={e => update('notes', e.target.value)}
@@ -621,12 +644,14 @@ export default function TravelersTab({
     setAccomModal({
       mode: 'edit',
       initial: {
-        name:      accom.name || '',
-        address:   accom.address || '',
-        check_in:  accom.check_in || '',
-        check_out: accom.check_out || '',
-        notes:     accom.notes || '',
-        traveler_ids: accom.traveler_ids || [],
+        name:           accom.name || '',
+        address:        accom.address || '',
+        check_in:       accom.check_in || '',
+        check_in_time:  accom.check_in_time || '',
+        check_out:      accom.check_out || '',
+        check_out_time: accom.check_out_time || '',
+        notes:          accom.notes || '',
+        traveler_ids:   accom.traveler_ids || [],
       },
       target: accom,
     })
@@ -682,7 +707,9 @@ export default function TravelersTab({
       name: form.name || '',
       address: form.address || '',
       check_in: form.check_in || '',
+      check_in_time: form.check_in_time || '',
       check_out: form.check_out || '',
+      check_out_time: form.check_out_time || '',
       notes: form.notes || '',
       updated_at: serverTimestamp(),
     }

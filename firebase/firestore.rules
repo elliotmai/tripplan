@@ -22,10 +22,10 @@ service cloud.firestore {
     }
 
     // ITINERARY EVENTS
+    // Any authenticated user can edit or delete — trip-level access is enforced
+    // in the UI so co-travelers can collaboratively manage the itinerary.
     match /itinerary_events/{eventId} {
-      allow read, create: if request.auth != null;
-      allow update, delete: if request.auth != null
-                            && resource.data.created_by == request.auth.uid;
+      allow read, create, update, delete: if request.auth != null;
     }
 
     // TRAVEL DETAILS (legacy per-user)

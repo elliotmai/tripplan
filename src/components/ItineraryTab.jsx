@@ -792,7 +792,7 @@ export default function ItineraryTab({
       notes: addForm.notes || null,
       type: addForm.type,
       assigned_to: serializeAssigned(addForm.assignAll, addForm.assignees, allMemberIds),
-      timezone: addForm.timezone || trip.timezone || null,
+      timezone: addForm.timezone || trip.timezone || localTimezone() || null,
       created_by: currentUser.id,
       created_at: serverTimestamp(),
     })
@@ -813,7 +813,7 @@ export default function ItineraryTab({
       notes: editForm.notes || null,
       type: editForm.type,
       assigned_to: serializeAssigned(editForm.assignAll, editForm.assignees, allMemberIds),
-      timezone: editForm.timezone || trip.timezone || null,
+      timezone: editForm.timezone || trip.timezone || localTimezone() || null,
       updated_at: serverTimestamp(),
     })
     setSaving(false)

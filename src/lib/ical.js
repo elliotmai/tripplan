@@ -2,7 +2,20 @@
 // Uses TZID= property for all datetime values so calendar apps
 // display events in the correct local time regardless of viewer timezone.
 
+import { localTimezone } from './timezones'
+
 function pad(n) { return String(n).padStart(2, '0') }
+
+// Pick a timezone for a datetime that has no explicit one. Falling back to
+// 'UTC' here causes events to display several hours off from what the user
+// typed, so we use the browser's local IANA zone instead. 'UTC' is only used
+// as a last-ditch backup if Intl is unavailable.
+function defaultTZ(...candidates) {
+  for (const c of candidates) {
+    if (c) return c
+  }
+  return localTimezone() || 'UTC'
+}
 function makeUID() { return `${Date.now()}-${Math.random().toString(36).slice(2)}@wander` }
 
 function escapeICS(str) {
@@ -186,7 +199,7 @@ function tripBannerLines(trip) {
 // event.timezone: IANA string (e.g. 'Europe/London') — falls back to trip.timezone or UTC
 
 function eventLines(event, tripTimezone) {
-  const tz = event.timezone || tripTimezone || 'UTC'
+  const tz = defaultTZ(event.timezone, tripTimezone)
 
   const lines = [
     'BEGIN:VEVENT',
@@ -244,8 +257,8 @@ function legLines(leg) {
                    : `${firstNames[0]} +${firstNames.length - 1}`
   const summary   = `${icon} ${ref} · ${whoShort}${route ? ': ' + route : ''}`
 
-  const departTZ = leg.depart_tz || 'UTC'
-  const arriveTZ = leg.arrive_tz || leg.depart_tz || 'UTC'
+  const departTZ = defaultTZ(leg.depart_tz)
+  const arriveTZ = defaultTZ(leg.arrive_tz, leg.depart_tz)
 
   const depDT = isoLocalToTZ(leg.depart_at, departTZ)
   const arrDT = isoLocalToTZ(leg.arrive_at, arriveTZ)
@@ -352,7 +365,7 @@ function relatedLegsFor(accom, allLegs) {
 export function generateICS(events, calName, trip) {
   const lines = icsHeader(calName, trip?.timezone || null)
   tripBannerLines(trip).forEach(l => lines.push(l))
-  const tz = trip?.timezone || 'UTC'
+  const tz = defaultTZ(trip?.timezone)
   for (const event of events) {
     eventLines(event, tz).forEach(l => lines.push(l))
   }
@@ -382,7 +395,7 @@ export function generateCombinedICS({ events = [], legs = [], accommodations = [
   const lines = icsHeader(`${trip?.name || 'Trip'} – Full Trip`, trip?.timezone || null)
   tripBannerLines(trip).forEach(l => lines.push(l))
 
-  const tz = trip?.timezone || 'UTC'
+  const tz = defaultTZ(trip?.timezone)
   for (const event of events) {
     eventLines(event, tz).forEach(l => lines.push(l))
   }

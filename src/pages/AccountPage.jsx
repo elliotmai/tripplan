@@ -60,6 +60,31 @@ function EditField({ label, value, placeholder, onChange, icon }) {
   )
 }
 
+// ─── segmented preference toggle ──────────────────────────────────────────────
+function SegmentRow({ label, value, options, onChange }) {
+  return (
+    <div className="flex items-center justify-between gap-3 px-5 py-4"
+      style={{ borderBottom: '1px solid rgba(255,255,255,0.05)' }}>
+      <p className="text-sm" style={{ color: '#d4cfc8' }}>{label}</p>
+      <div className="flex rounded-xl p-0.5" style={{ background: 'rgba(255,255,255,0.04)' }}>
+        {options.map(opt => {
+          const active = opt.value === value
+          return (
+            <button key={opt.value} onClick={() => !active && onChange(opt.value)}
+              className="px-3 py-1.5 rounded-lg text-xs font-medium transition-all active:scale-95"
+              style={{
+                background: active ? 'linear-gradient(135deg, #d4b87a 0%, #c19a4e 100%)' : 'transparent',
+                color: active ? '#0a0908' : '#8a7f70',
+              }}>
+              {opt.label}
+            </button>
+          )
+        })}
+      </div>
+    </div>
+  )
+}
+
 // ─── delete confirmation modal ────────────────────────────────────────────────
 function DeleteModal({ onConfirm, onClose, loading }) {
   const [password, setPassword] = useState('')
@@ -145,7 +170,7 @@ function DeleteModal({ onConfirm, onClose, loading }) {
 
 // ─── main page ────────────────────────────────────────────────────────────────
 export default function AccountPage() {
-  const { user, signOut, updateProfileData, deleteAccount } = useAuth()
+  const { user, signOut, updateProfileData, updatePreferences, deleteAccount } = useAuth()
   const navigate = useNavigate()
 
   const [form, setForm] = useState({
@@ -430,6 +455,22 @@ export default function AccountPage() {
               {saving ? 'Saving…' : saved ? <><Check size={14} /> Saved</> : 'Save Changes'}
             </button>
           </div>
+        </Section>
+
+        {/* Display preferences */}
+        <Section title="Preferences">
+          <SegmentRow
+            label="Temperature"
+            value={user?.temp_unit || 'C'}
+            options={[{ value: 'C', label: '°C' }, { value: 'F', label: '°F' }]}
+            onChange={v => updatePreferences({ temp_unit: v })}
+          />
+          <SegmentRow
+            label="Time format"
+            value={user?.time_format || '12'}
+            options={[{ value: '12', label: '12-hour' }, { value: '24', label: '24-hour' }]}
+            onChange={v => updatePreferences({ time_format: v })}
+          />
         </Section>
 
         {/* Account actions */}

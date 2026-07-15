@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useState, useRef } from 'react'
 import {
   collection, query, where, getDocs, addDoc, deleteDoc, updateDoc,
   doc, serverTimestamp,
@@ -57,16 +57,24 @@ function suggestedRange(counts, dates, totalMembers) {
 
 // ─── main ─────────────────────────────────────────────────────────────────────
 
-export default function DatesTab({ tripId, trip, members, currentUser, onTripUpdated }) {
-  const [poll, setPoll]               = useState(null)
+export default function DatesTab({ tripId, trip, members, currentUser, onTripUpdated, readOnly = false }) {
+  const [poll, setPoll] = useState(null)
   const [availability, setAvailability] = useState([])  // [{ id, user_id, dates }]
-  const [loading, setLoading]         = useState(true)
-  const [saving, setSaving]           = useState(false)
-  const [showCreate, setShowCreate]   = useState(false)
-  const [lockRange, setLockRange]     = useState(null)  // { start, end }
-  const [lockMsg, setLockMsg]         = useState('')
+  const [loading, setLoading] = useState(true)
+  const [saving, setSaving] = useState(false)
+  const [showCreate, setShowCreate] = useState(false)
+  const [lockRange, setLockRange] = useState(null)  // { start, end }
+  const [lockMsg, setLockMsg] = useState('')
 
   const isOwner = members.find(m => m.id === currentUser?.id)?.role === 'owner'
+
+  // Refs for race-free availability writes: myDocId pins the current user's doc
+  // so we never create a duplicate; writeLock serialises writes so rapid taps
+  // apply in order; availRef mirrors state so back-to-back taps compute from
+  // fresh data without waiting for a re-render.
+  const myDocIdRef = useRef(null)
+  const writeLock = useRef(Promise.resolve())
+  const availRef = useRef([])
 
   useEffect(() => { load() }, [tripId])
 
@@ -88,28 +96,41 @@ export default function DatesTab({ tripId, trip, members, currentUser, onTripUpd
     const availSnap = await getDocs(
       query(collection(db, 'date_availability'), where('poll_id', '==', latest.id))
     )
-    setAvailability(availSnap.docs.map(d => ({ id: d.id, ...d.data() })))
+    const rows = availSnap.docs.map(d => ({ id: d.id, ...d.data() }))
+    const mineDoc = rows.find(a => a.user_id === currentUser?.id)
+    myDocIdRef.current = mineDoc ? mineDoc.id : null
+    availRef.current = rows
+    setAvailability(rows)
     setLoading(false)
   }
 
   // ── derived ────────────────────────────────────────────────────────────────
 
-  const myDoc  = availability.find(a => a.user_id === currentUser?.id)
+  const myDoc = availability.find(a => a.user_id === currentUser?.id)
   const myDates = useMemo(() => new Set(myDoc?.dates || []), [myDoc])
+
+  // Only count responses from people currently on the trip — a removed member's
+  // stale availability shouldn't skew the heatmap, totals, or the suggestion.
+  const memberIds = useMemo(() => new Set(members.map(m => m.id)), [members])
+  const memberAvailability = useMemo(
+    () => availability.filter(a => memberIds.has(a.user_id)),
+    [availability, memberIds],
+  )
+  const respondedCount = memberAvailability.length
 
   const dateCounts = useMemo(() => {
     const counts = {}
-    availability.forEach(a => (a.dates || []).forEach(d => {
+    memberAvailability.forEach(a => (a.dates || []).forEach(d => {
       counts[d] = (counts[d] || 0) + 1
     }))
     return counts
-  }, [availability])
+  }, [memberAvailability])
 
   const allDates = useMemo(() => {
     if (!poll?.range_start || !poll?.range_end) return []
     return eachDayOfInterval({
       start: parseISO(poll.range_start),
-      end:   parseISO(poll.range_end),
+      end: parseISO(poll.range_end),
     }).map(ISO)
   }, [poll?.range_start, poll?.range_end])
 
@@ -140,45 +161,59 @@ export default function DatesTab({ tripId, trip, members, currentUser, onTripUpd
     // Delete all availability docs for this poll, then the poll itself.
     await Promise.all(availability.map(a => deleteDoc(doc(db, 'date_availability', a.id))))
     await deleteDoc(doc(db, 'date_polls', poll.id))
+    myDocIdRef.current = null
+    availRef.current = []
     setPoll(null); setAvailability([])
     setSaving(false)
   }
 
-  async function toggleDate(iso) {
+  // Persist the current user's dates. Serialised via writeLock so concurrent
+  // taps can't race into two addDocs (which used to create duplicate docs).
+  async function persistDates(dates) {
     if (!poll || !currentUser?.id) return
-    const next = new Set(myDates)
-    if (next.has(iso)) next.delete(iso); else next.add(iso)
-    const dates = [...next].sort()
-    // Optimistic local update.
-    setAvailability(prev => {
-      const others = prev.filter(a => a.user_id !== currentUser.id)
-      const mine = prev.find(a => a.user_id === currentUser.id)
-      return [
-        ...others,
-        { ...(mine || { id: `local_${currentUser.id}` }), user_id: currentUser.id, dates, poll_id: poll.id, trip_id: tripId },
-      ]
-    })
-    if (myDoc?.id && !myDoc.id.startsWith('local_')) {
-      await updateDoc(doc(db, 'date_availability', myDoc.id), {
+    if (myDocIdRef.current) {
+      await updateDoc(doc(db, 'date_availability', myDocIdRef.current), {
         dates, updated_at: serverTimestamp(),
       })
     } else {
-      await addDoc(collection(db, 'date_availability'), {
+      const ref = await addDoc(collection(db, 'date_availability'), {
         poll_id: poll.id, trip_id: tripId, user_id: currentUser.id,
-        dates, updated_at: serverTimestamp(), created_at: serverTimestamp(),
+        dates, created_at: serverTimestamp(), updated_at: serverTimestamp(),
       })
-      // Re-fetch to swap the local placeholder id for the real one.
-      const availSnap = await getDocs(
-        query(collection(db, 'date_availability'), where('poll_id', '==', poll.id))
-      )
-      setAvailability(availSnap.docs.map(d => ({ id: d.id, ...d.data() })))
+      myDocIdRef.current = ref.id
+      // Swap the local placeholder id for the real one, in state and the ref.
+      const patch = a => (a.user_id === currentUser.id ? { ...a, id: ref.id } : a)
+      availRef.current = availRef.current.map(patch)
+      setAvailability(prev => prev.map(patch))
     }
   }
 
+  function toggleDate(iso) {
+    if (readOnly || !poll || !currentUser?.id) return
+    const mine = availRef.current.find(a => a.user_id === currentUser.id)
+    const next = new Set(mine?.dates || [])
+    if (next.has(iso)) next.delete(iso); else next.add(iso)
+    const dates = [...next].sort()
+
+    const others = availRef.current.filter(a => a.user_id !== currentUser.id)
+    const nextMine = {
+      id: mine?.id || myDocIdRef.current || `local_${currentUser.id}`,
+      user_id: currentUser.id, dates, poll_id: poll.id, trip_id: tripId,
+    }
+    const nextAvail = [...others, nextMine]
+    availRef.current = nextAvail          // keep ref fresh for rapid taps
+    setAvailability(nextAvail)            // optimistic UI
+
+    writeLock.current = writeLock.current.then(() => persistDates(dates)).catch(() => { })
+  }
+
   async function clearMine() {
-    if (!myDoc?.id || myDoc.id.startsWith('local_')) return
+    await writeLock.current.catch(() => { })   // let any pending create finish
+    if (!myDocIdRef.current) return
     if (!confirm('Clear your availability?')) return
-    await deleteDoc(doc(db, 'date_availability', myDoc.id))
+    const id = myDocIdRef.current
+    myDocIdRef.current = null
+    await deleteDoc(doc(db, 'date_availability', id))
     await load()
   }
 
@@ -186,13 +221,13 @@ export default function DatesTab({ tripId, trip, members, currentUser, onTripUpd
     // Inputs default-display the suggestion, but lockRange stays null until
     // the user actually edits — fall back to the suggestion in that case.
     const start = lockRange?.start || suggestion?.start
-    const end   = lockRange?.end   || suggestion?.end
+    const end = lockRange?.end || suggestion?.end
     if (!start || !end || start > end) return
     setSaving(true); setLockMsg('')
     try {
       await updateDoc(doc(db, 'trips', tripId), {
         start_date: start,
-        end_date:   end,
+        end_date: end,
         updated_at: serverTimestamp(),
       })
       setLockMsg('Trip dates updated!')
@@ -250,7 +285,7 @@ export default function DatesTab({ tripId, trip, members, currentUser, onTripUpd
               {format(parseISO(poll.range_end), 'MMM d, yyyy')}
             </p>
             <p className="text-xs mt-1" style={{ color: '#5a5248' }}>
-              {availability.length}/{members.length} traveler{members.length !== 1 ? 's' : ''} responded
+              {respondedCount}/{members.length} traveler{members.length !== 1 ? 's' : ''} responded
               {' · '}
               tap days you're free
             </p>
@@ -280,8 +315,8 @@ export default function DatesTab({ tripId, trip, members, currentUser, onTripUpd
       <div className="flex items-center justify-between text-xs px-1">
         <div className="flex items-center gap-3" style={{ color: '#5a5248' }}>
           <LegendDot color="rgba(212,184,122,0.18)" label="Few" />
-          <LegendDot color="rgba(212,184,122,0.5)"  label="Many" />
-          <LegendDot color="#d4b87a"                label="All" dark />
+          <LegendDot color="rgba(212,184,122,0.5)" label="Many" />
+          <LegendDot color="#d4b87a" label="All" dark />
         </div>
         {myDates.size > 0 && (
           <button onClick={clearMine}
@@ -310,8 +345,11 @@ export default function DatesTab({ tripId, trip, members, currentUser, onTripUpd
                 {suggestion.length > 1 && ` – ${format(parseISO(suggestion.end), 'MMM d')}`}
               </p>
               <p className="text-xs mt-0.5" style={{ color: '#5a5248' }}>
-                {suggestion.length} day{suggestion.length !== 1 ? 's' : ''} · everyone available
-                {' '}({Math.round(suggestion.avg)}/{members.length})
+                {suggestion.length} day{suggestion.length !== 1 ? 's' : ''}
+                {' · '}
+                {suggestion.avg >= members.length && members.length > 0
+                  ? 'everyone free'
+                  : `${Math.round(suggestion.avg)} of ${members.length} free`}
               </p>
             </div>
           </div>
@@ -330,19 +368,30 @@ export default function DatesTab({ tripId, trip, members, currentUser, onTripUpd
                   onChange={v => setLockRange({ start: lockRange?.start || suggestion.start, end: v })}
                 />
               </div>
-              <button onClick={applyLock} disabled={saving}
-                className="w-full py-3 rounded-xl text-sm font-medium flex items-center justify-center gap-2 transition-all active:scale-95"
-                style={{
-                  background: lockMsg
-                    ? 'rgba(138,171,142,0.2)'
-                    : 'linear-gradient(135deg, #d4b87a 0%, #c19a4e 100%)',
-                  color: lockMsg ? '#8aab8e' : '#0a0908',
-                }}>
-                {lockMsg ? <><Check size={14} /> {lockMsg}</> : <><Lock size={13} /> Lock as trip dates</>}
-              </button>
-              <p className="text-xs mt-2 text-center" style={{ color: '#5a5248' }}>
-                Updates the trip's start &amp; end dates.
-              </p>
+              {(() => {
+                const ls = lockRange?.start || suggestion.start
+                const le = lockRange?.end || suggestion.end
+                const lockValid = ls && le && ls <= le
+                return (
+                  <>
+                    <button onClick={applyLock} disabled={saving || !lockValid}
+                      className="w-full py-3 rounded-xl text-sm font-medium flex items-center justify-center gap-2 transition-all active:scale-95"
+                      style={{
+                        background: lockMsg
+                          ? 'rgba(138,171,142,0.2)'
+                          : lockValid
+                            ? 'linear-gradient(135deg, #d4b87a 0%, #c19a4e 100%)'
+                            : '#3d3830',
+                        color: lockMsg ? '#8aab8e' : lockValid ? '#0a0908' : '#5a5248',
+                      }}>
+                      {lockMsg ? <><Check size={14} /> {lockMsg}</> : <><Lock size={13} /> Lock as trip dates</>}
+                    </button>
+                    <p className="text-xs mt-2 text-center" style={{ color: '#5a5248' }}>
+                      {lockValid ? "Updates the trip's start & end dates." : 'End date must be on or after the start date.'}
+                    </p>
+                  </>
+                )
+              })()}
             </>
           )}
         </div>
@@ -415,10 +464,10 @@ function EmptyState({ isOwner, onStart }) {
 
 function CreatePollCard({ saving, onCreate, onCancel, existingTrip }) {
   const defaultStart = existingTrip?.start_date || todayISO()
-  const defaultEnd   = existingTrip?.end_date
+  const defaultEnd = existingTrip?.end_date
     || ISO(addDays(parseISO(defaultStart), 60))
   const [start, setStart] = useState(defaultStart)
-  const [end,   setEnd]   = useState(defaultEnd)
+  const [end, setEnd] = useState(defaultEnd)
   const valid = start && end && start <= end
 
   return (
@@ -433,7 +482,7 @@ function CreatePollCard({ saving, onCreate, onCancel, existingTrip }) {
       </div>
       <div className="grid grid-cols-2 gap-3">
         <DateInput label="Window starts" value={start} onChange={setStart} />
-        <DateInput label="Window ends"   value={end}   onChange={setEnd} />
+        <DateInput label="Window ends" value={end} onChange={setEnd} />
       </div>
       <div className="flex gap-2">
         <button onClick={() => onCreate(start, end)} disabled={saving || !valid}
@@ -458,7 +507,7 @@ function CreatePollCard({ saving, onCreate, onCancel, existingTrip }) {
 
 function Calendar({ rangeStart, rangeEnd, myDates, counts, totalMembers, onToggle }) {
   const start = parseISO(rangeStart)
-  const end   = parseISO(rangeEnd)
+  const end = parseISO(rangeEnd)
   // Build a list of months that the range spans.
   const months = []
   let cursor = startOfMonth(start)
@@ -487,8 +536,8 @@ function Calendar({ rangeStart, rangeEnd, myDates, counts, totalMembers, onToggl
 
 function MonthGrid({ month, rangeStart, rangeEnd, myDates, counts, totalMembers, onToggle }) {
   const gridStart = startOfWeek(startOfMonth(month), { weekStartsOn: 0 })
-  const gridEnd   = endOfWeek(endOfMonth(month),     { weekStartsOn: 0 })
-  const days      = eachDayOfInterval({ start: gridStart, end: gridEnd })
+  const gridEnd = endOfWeek(endOfMonth(month), { weekStartsOn: 0 })
+  const days = eachDayOfInterval({ start: gridStart, end: gridEnd })
 
   return (
     <div className="glass rounded-2xl p-4">
@@ -504,10 +553,10 @@ function MonthGrid({ month, rangeStart, rangeEnd, myDates, counts, totalMembers,
         {days.map(day => {
           const inMonth = isSameMonth(day, month)
           const inRange = isWithinInterval(day, { start: rangeStart, end: rangeEnd })
-          const iso     = ISO(day)
-          const count   = counts[iso] || 0
-          const mine    = myDates.has(iso)
-          const ratio   = totalMembers ? count / totalMembers : 0
+          const iso = ISO(day)
+          const count = counts[iso] || 0
+          const mine = myDates.has(iso)
+          const ratio = totalMembers ? count / totalMembers : 0
 
           if (!inRange) {
             return (

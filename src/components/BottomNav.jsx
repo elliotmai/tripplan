@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { collection, query, where, onSnapshot } from 'firebase/firestore'
-import { Compass, User, Users } from 'lucide-react'
+import { Compass, User, Users, Plane } from 'lucide-react'
 import { db } from '../lib/firebase'
 import { useAuth } from '../contexts/AuthContext'
 import { FRIENDSHIP_STATUS } from '../lib/friends'
@@ -16,7 +16,7 @@ export default function BottomNav({ active }) {
     if (!user?.id) return
     const q = query(
       collection(db, 'friendships'),
-      where('users',  'array-contains', user.id),
+      where('users', 'array-contains', user.id),
       where('status', '==', FRIENDSHIP_STATUS.PENDING),
     )
     return onSnapshot(q, snap => {
@@ -38,6 +38,12 @@ export default function BottomNav({ active }) {
         label="Trips"
         active={active === 'trips'}
         onClick={() => navigate('/')}
+      />
+      <NavItem
+        icon={<Plane size={20} />}
+        label="Flights"
+        active={active === 'flights'}
+        onClick={() => navigate('/flights')}
       />
       <NavItem
         icon={<Users size={20} />}

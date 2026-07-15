@@ -4,7 +4,7 @@ import { collection, query, where, getDocs, doc, getDoc } from 'firebase/firesto
 import { db } from '../lib/firebase'
 import { useAuth } from '../contexts/AuthContext'
 import { format, parseISO, differenceInDays } from 'date-fns'
-import { Plus, MapPin, Calendar, ChevronRight } from 'lucide-react'
+import { Plus, MapPin, Calendar, ChevronRight, Eye } from 'lucide-react'
 import NewTripModal from '../components/NewTripModal'
 import BottomNav from '../components/BottomNav'
 
@@ -12,6 +12,7 @@ export default function TripsPage() {
   const { user } = useAuth()
   const navigate = useNavigate()
   const [trips, setTrips] = useState([])
+  const [observedTrips, setObservedTrips] = useState([])
   const [loading, setLoading] = useState(true)
   const [showNew, setShowNew] = useState(false)
 
@@ -34,6 +35,24 @@ export default function TripsPage() {
       snaps.forEach(s => s.exists() && tripDocs.push({ id: s.id, ...s.data() }))
     }
     setTrips(tripDocs)
+
+    // Trips this user observes (BCC viewer) — shown in a separate section.
+    const obsSnap = await getDocs(
+      query(collection(db, 'trip_observers'), where('user_id', '==', user.id))
+    )
+    const obsIds = [...new Set(obsSnap.docs.map(d => d.data().trip_id))]
+      .filter(id => !tripIds.includes(id)) // don't double-list trips you're also on
+    if (obsIds.length) {
+      const obsDocs = []
+      for (const c of (function () { const o = []; for (let i = 0; i < obsIds.length; i += 30) o.push(obsIds.slice(i, i + 30)); return o })()) {
+        const snaps = await Promise.all(c.map(id => getDoc(doc(db, 'trips', id))))
+        snaps.forEach(s => s.exists() && obsDocs.push({ id: s.id, ...s.data() }))
+      }
+      setObservedTrips(obsDocs)
+    } else {
+      setObservedTrips([])
+    }
+
     setLoading(false)
   }
 
@@ -73,7 +92,7 @@ export default function TripsPage() {
           <div className="space-y-4 pt-2">
             {[1, 2, 3].map(i => <div key={i} className="h-32 rounded-2xl shimmer" style={{ background: '#1c1916' }} />)}
           </div>
-        ) : trips.length === 0 ? (
+        ) : trips.length === 0 && observedTrips.length === 0 ? (
           <div className="text-center py-20 fade-in">
             <div className="text-6xl mb-4">✈️</div>
             <p className="font-display text-2xl font-light mb-2" style={{ color: '#e8d5a3' }}>No trips yet</p>
@@ -99,6 +118,16 @@ export default function TripsPage() {
                 <h2 className="text-xs tracking-[0.2em] uppercase mb-4" style={{ color: '#5a5248' }}>Past</h2>
                 <div className="space-y-3">
                   {past.map(trip => <TripCard key={trip.id} trip={trip} onClick={() => navigate(`/trips/${trip.id}`)} past />)}
+                </div>
+              </section>
+            )}
+            {observedTrips.length > 0 && (
+              <section className="fade-in">
+                <h2 className="text-xs tracking-[0.2em] uppercase mb-4 flex items-center gap-1.5" style={{ color: '#5a5248' }}>
+                  <Eye size={11} />Observing
+                </h2>
+                <div className="space-y-3">
+                  {observedTrips.map(trip => <TripCard key={trip.id} trip={trip} onClick={() => navigate(`/trips/${trip.id}`)} />)}
                 </div>
               </section>
             )}

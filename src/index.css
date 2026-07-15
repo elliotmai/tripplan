@@ -18,7 +18,19 @@ body {
   font-family: 'DM Sans', sans-serif;
   font-weight: 300;
   -webkit-font-smoothing: antialiased;
+  /* App-wide safety net: any long unbroken string (URLs, emails, long names)
+     wraps instead of overflowing its container. Only breaks a word when it would
+     otherwise overflow; normal text is unaffected. `truncate` still wins where a
+     single ellipsized line is used, since it sets white-space: nowrap. */
+  overflow-wrap: break-word;
 }
+
+/* Long links/emails may have no natural break points — let them break anywhere. */
+a[href], .break-anywhere { overflow-wrap: anywhere; word-break: break-word; }
+
+/* A `truncate` element used as a flex child must be allowed to shrink below its
+   content width, otherwise it clips hard instead of showing an ellipsis. */
+.truncate { min-width: 0; }
 
 img, svg, video, canvas { max-width: 100%; height: auto; }
 

@@ -15,22 +15,29 @@ import {
 } from '../lib/friends'
 import {
   Edit2, UserPlus, Plus, Trash2, ChevronDown, ChevronUp,
-  CalendarDays, Check, X, Plane, Building2, Users, Sparkles,
+  CalendarDays, Check, X, Plane, Building2, Users, Sparkles, Radar, MapPin,
+  MoreVertical, UserMinus, Eye,
 } from 'lucide-react'
 import TimezonePicker from './TimezonePicker'
+import { formatWithTZ, durationMinutes, formatDuration } from '../lib/timezones'
+import { isTrackable, toTrackableFlights } from '../lib/flightTracking'
+import { openInMaps } from '../lib/maps'
+import { isHour12 } from '../lib/format'
+import FlightMap from './FlightMap'
+import ObserversSection from './ObserversSection'
 
 // ─── constants ────────────────────────────────────────────────────────────────
 
 const TRANSPORT_OPTIONS = [
   { value: 'flight', label: 'Flight', icon: '✈️' },
-  { value: 'train',  label: 'Train',  icon: '🚂' },
-  { value: 'bus',    label: 'Bus',    icon: '🚌' },
-  { value: 'car',    label: 'Car',    icon: '🚗' },
-  { value: 'ferry',  label: 'Ferry',  icon: '⛴️' },
+  { value: 'train', label: 'Train', icon: '🚂' },
+  { value: 'bus', label: 'Bus', icon: '🚌' },
+  { value: 'car', label: 'Car', icon: '🚗' },
+  { value: 'ferry', label: 'Ferry', icon: '⛴️' },
   { value: 'subway', label: 'Subway', icon: '🚇' },
-  { value: 'taxi',   label: 'Taxi',   icon: '🚕' },
-  { value: 'walk',   label: 'Walking', icon: '🚶' },
-  { value: 'other',  label: 'Other',  icon: '🛸' },
+  { value: 'taxi', label: 'Taxi', icon: '🚕' },
+  { value: 'walk', label: 'Walking', icon: '🚶' },
+  { value: 'other', label: 'Other', icon: '🛸' },
 ]
 const TRANSPORT_MAP = Object.fromEntries(TRANSPORT_OPTIONS.map(t => [t.value, t]))
 
@@ -49,16 +56,11 @@ const BLANK_ACCOM_FORM = {
 
 // ─── helpers ──────────────────────────────────────────────────────────────────
 
-function formatDT(dt, tz) {
-  if (!dt) return null
-  try {
-    return new Date(dt).toLocaleString('en-US', {
-      timeZone: tz || undefined,
-      month: 'short', day: 'numeric',
-      hour: '2-digit', minute: '2-digit',
-      timeZoneName: tz ? 'short' : undefined,
-    })
-  } catch { return dt }
+// The stored `dt` is a wall-clock time in `tz` (e.g. 2:30 PM in Tokyo), not in
+// the viewer's browser zone — so we resolve the true instant first, then render
+// it back in `tz`. See lib/timezones.js for the full explanation.
+function formatDT(dt, tz, hour12) {
+  return formatWithTZ(dt, tz, { year: false, hour12 }) || dt
 }
 
 function formatDate(dStr) {
@@ -70,13 +72,10 @@ function formatDate(dStr) {
   } catch { return dStr }
 }
 
-function durationLabel(from, to) {
-  try {
-    const mins = Math.round((new Date(to) - new Date(from)) / 60000)
-    if (mins < 0) return null
-    const h = Math.floor(mins / 60), m = mins % 60
-    return h > 0 ? `${h}h ${m > 0 ? m + 'm' : ''}`.trim() : `${m}m`
-  } catch { return null }
+// Duration must be computed on true instants: a Tokyo→LA leg departs and arrives
+// in different zones, so subtracting the raw wall-clock strings is wrong.
+function durationLabel(from, to, fromTz, toTz) {
+  return formatDuration(durationMinutes(from, fromTz, to, toTz))
 }
 
 function travelersLabel(item, currentUserId, members) {
@@ -512,13 +511,15 @@ function ExportTravelModal({ allLegs, allAccoms, members, trip, onClose }) {
 
 export default function TravelersTab({
   tripId, trip, members, travelDetails = [], sharedLegs = [], sharedAccoms = [],
-  currentUser, onUpdate,
+  currentUser, onUpdate, readOnly = false,
 }) {
   const [expandedUser, setExpandedUser] = useState(null)
   const [inviteEmail, setInviteEmail] = useState('')
   const [inviting, setInviting] = useState(false)
   const [inviteMsg, setInviteMsg] = useState('')
   const [showExport, setShowExport] = useState(false)
+  const [trackingLeg, setTrackingLeg] = useState(null)   // leg being live-tracked
+  const [menuMember, setMenuMember] = useState(null)     // member id whose role menu is open
   const [friendProfiles, setFriendProfiles] = useState([])  // accepted friends not in this trip
 
   // modal state
@@ -527,23 +528,26 @@ export default function TravelersTab({
   const [saving, setSaving] = useState(false)
 
   const isOwner = members.find(m => m.id === currentUser?.id)?.role === 'owner'
+  const iAmTraveler = members.some(m => m.id === currentUser?.id)
 
-  // Load accepted friends not yet in this trip — used as invite suggestions.
+  // Load accepted friends not yet in this trip — used as invite and observer
+  // suggestions. Loaded for any traveller (invites are owner-only, but any
+  // traveller can add observers from their friends).
   useEffect(() => {
-    if (!isOwner || !currentUser?.id) return
+    if (!iAmTraveler || !currentUser?.id) return
     let cancelled = false
-    ;(async () => {
-      const fs = await listFriendships(currentUser.id)
-      const accepted = fs.filter(f => f.status === FRIENDSHIP_STATUS.ACCEPTED)
-      const memberIds = new Set(members.map(m => m.id))
-      const candidateIds = accepted
-        .map(f => otherUid(f, currentUser.id))
-        .filter(uid => uid && !memberIds.has(uid))
-      const profs = await fetchProfiles(candidateIds)
-      if (!cancelled) setFriendProfiles(profs)
-    })()
+      ; (async () => {
+        const fs = await listFriendships(currentUser.id)
+        const accepted = fs.filter(f => f.status === FRIENDSHIP_STATUS.ACCEPTED)
+        const memberIds = new Set(members.map(m => m.id))
+        const candidateIds = accepted
+          .map(f => otherUid(f, currentUser.id))
+          .filter(uid => uid && !memberIds.has(uid))
+        const profs = await fetchProfiles(candidateIds)
+        if (!cancelled) setFriendProfiles(profs)
+      })()
     return () => { cancelled = true }
-  }, [isOwner, currentUser?.id, members])
+  }, [iAmTraveler, currentUser?.id, members])
 
   const allLegs = useMemo(
     () => normalizeLegs({ legacyDetails: travelDetails, sharedLegs, members }),
@@ -566,7 +570,7 @@ export default function TravelersTab({
     // The current user can only write friendships they're part of, so we cover (me ↔ newcomer)
     // here; other members will fill in their own pairs when they next open the trip.
     if (currentUser?.id) {
-      ensureTripFriendship(currentUser.id, profile.id, tripId).catch(() => {})
+      ensureTripFriendship(currentUser.id, profile.id, tripId).catch(() => { })
     }
   }
 
@@ -591,6 +595,34 @@ export default function TravelersTab({
     await addProfileToTrip(profile)
     setInviteMsg(`${profile.full_name} added!`)
     setInviting(false); onUpdate()
+  }
+
+  // ── manage travellers (owner) ────────────────────────────────────────────────
+
+  async function deleteMembership(userId) {
+    const snap = await getDocs(query(
+      collection(db, 'trip_members'),
+      where('trip_id', '==', tripId), where('user_id', '==', userId),
+    ))
+    await Promise.all(snap.docs.map(d => deleteDoc(doc(db, 'trip_members', d.id))))
+  }
+
+  async function removeMember(member) {
+    setMenuMember(null)
+    if (!confirm(`Remove ${member.full_name} from this trip?`)) return
+    await deleteMembership(member.id)
+    onUpdate()
+  }
+
+  // Traveller → observer: drop their membership and add them as an observer of
+  // whoever made the change (keeps the BCC model — only you will see them).
+  async function makeObserver(member) {
+    setMenuMember(null)
+    await deleteMembership(member.id)
+    await addDoc(collection(db, 'trip_observers'), {
+      trip_id: tripId, user_id: member.id, added_by: currentUser.id, created_at: serverTimestamp(),
+    })
+    onUpdate()
   }
 
   // ── add leg / accommodation ────────────────────────────────────────────────
@@ -626,14 +658,14 @@ export default function TravelersTab({
       mode: 'edit',
       initial: {
         transport: leg.transport || 'flight',
-        number:    leg.number || '',
-        from:      leg.from || '',
-        to:        leg.to || '',
+        number: leg.number || '',
+        from: leg.from || '',
+        to: leg.to || '',
         depart_at: leg.depart_at || '',
         arrive_at: leg.arrive_at || '',
         depart_tz: leg.depart_tz || '',
         arrive_tz: leg.arrive_tz || '',
-        notes:     leg.notes || '',
+        notes: leg.notes || '',
         traveler_ids: leg.traveler_ids || [],
       },
       target: leg,
@@ -644,14 +676,14 @@ export default function TravelersTab({
     setAccomModal({
       mode: 'edit',
       initial: {
-        name:           accom.name || '',
-        address:        accom.address || '',
-        check_in:       accom.check_in || '',
-        check_in_time:  accom.check_in_time || '',
-        check_out:      accom.check_out || '',
+        name: accom.name || '',
+        address: accom.address || '',
+        check_in: accom.check_in || '',
+        check_in_time: accom.check_in_time || '',
+        check_out: accom.check_out || '',
         check_out_time: accom.check_out_time || '',
-        notes:          accom.notes || '',
-        traveler_ids:   accom.traveler_ids || [],
+        notes: accom.notes || '',
+        traveler_ids: accom.traveler_ids || [],
       },
       target: accom,
     })
@@ -775,6 +807,7 @@ export default function TravelersTab({
   // ── permissions ────────────────────────────────────────────────────────────
 
   function canEditItem(item) {
+    if (readOnly) return false
     // Any trip member can manage shared travel entries; legacy per-user entries
     // are still restricted to their owner because Firestore rules pin them to user_id.
     if (item._source === SOURCES.SHARED) return !!currentUser?.id
@@ -801,26 +834,28 @@ export default function TravelersTab({
       )}
 
       {/* Top-level add buttons */}
-      <div className="grid grid-cols-2 gap-2">
-        <button onClick={() => openAddLeg(currentUser?.id)}
-          className="flex items-center justify-center gap-2 px-3 py-3 rounded-2xl text-xs transition-all"
-          style={{
-            background: 'rgba(212,184,122,0.08)',
-            border: '1px dashed rgba(212,184,122,0.3)',
-            color: '#d4b87a',
-          }}>
-          <Plane size={13} />Add flight / transport
-        </button>
-        <button onClick={() => openAddAccom(currentUser?.id)}
-          className="flex items-center justify-center gap-2 px-3 py-3 rounded-2xl text-xs transition-all"
-          style={{
-            background: 'rgba(122,154,181,0.08)',
-            border: '1px dashed rgba(122,154,181,0.3)',
-            color: '#7a9ab5',
-          }}>
-          <Building2 size={13} />Add accommodation
-        </button>
-      </div>
+      {!readOnly && (
+        <div className="grid grid-cols-2 gap-2">
+          <button onClick={() => openAddLeg(currentUser?.id)}
+            className="flex items-center justify-center gap-2 px-3 py-3 rounded-2xl text-xs transition-all"
+            style={{
+              background: 'rgba(212,184,122,0.08)',
+              border: '1px dashed rgba(212,184,122,0.3)',
+              color: '#d4b87a',
+            }}>
+            <Plane size={13} />Add flight / transport
+          </button>
+          <button onClick={() => openAddAccom(currentUser?.id)}
+            className="flex items-center justify-center gap-2 px-3 py-3 rounded-2xl text-xs transition-all"
+            style={{
+              background: 'rgba(122,154,181,0.08)',
+              border: '1px dashed rgba(122,154,181,0.3)',
+              color: '#7a9ab5',
+            }}>
+            <Building2 size={13} />Add accommodation
+          </button>
+        </div>
+      )}
 
       {/* Invite */}
       {isOwner && (
@@ -881,6 +916,14 @@ export default function TravelersTab({
         </div>
       )}
 
+      {/* Observers — any traveller can add their own (BCC-style) */}
+      {members.some(m => m.id === currentUser?.id) && (
+        <ObserversSection
+          tripId={tripId} members={members} currentUser={currentUser}
+          friends={friendProfiles} onMembersChanged={onUpdate}
+        />
+      )}
+
       {/* Per-member cards */}
       {members.map(member => {
         const memberLegs = legsForMember(allLegs, member.id)
@@ -925,6 +968,32 @@ export default function TravelersTab({
                     {isExpanded ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
                   </button>
                 )}
+                {isOwner && !readOnly && member.id !== currentUser?.id && member.role !== 'owner' && (
+                  <div className="relative">
+                    <button onClick={() => setMenuMember(menuMember === member.id ? null : member.id)}
+                      style={{ color: '#5a5248' }} title="Manage">
+                      <MoreVertical size={15} />
+                    </button>
+                    {menuMember === member.id && (
+                      <>
+                        <div className="fixed inset-0 z-30" onClick={() => setMenuMember(null)} />
+                        <div className="absolute right-0 top-7 z-40 rounded-xl overflow-hidden"
+                          style={{ background: '#1c1916', border: '1px solid rgba(212,184,122,0.15)', minWidth: 168, boxShadow: '0 8px 24px rgba(0,0,0,0.5)' }}>
+                          <button onClick={() => makeObserver(member)}
+                            className="w-full flex items-center gap-2 px-4 py-3 text-left text-xs transition-all active:opacity-70"
+                            style={{ color: '#7a9ab5', borderBottom: '1px solid rgba(255,255,255,0.05)' }}>
+                            <Eye size={13} />Change to observer
+                          </button>
+                          <button onClick={() => removeMember(member)}
+                            className="w-full flex items-center gap-2 px-4 py-3 text-left text-xs transition-all active:opacity-70"
+                            style={{ color: '#c47c5a' }}>
+                            <UserMinus size={13} />Remove from trip
+                          </button>
+                        </div>
+                      </>
+                    )}
+                  </div>
+                )}
               </div>
             </div>
 
@@ -940,6 +1009,7 @@ export default function TravelersTab({
                       onEdit={leg => canEditItem(leg) && openEditLeg(leg)}
                       onDelete={leg => canEditItem(leg) && deleteLeg(leg)}
                       canEditFn={canEditItem}
+                      onTrack={setTrackingLeg}
                     />
                   </div>
                 )}
@@ -1010,13 +1080,22 @@ export default function TravelersTab({
           onClose={() => setShowExport(false)}
         />
       )}
+
+      {trackingLeg && (
+        <FlightMap
+          flights={toTrackableFlights([trackingLeg], { tripId, tripName: trip?.name, tripEmoji: trip?.cover_emoji })}
+          focusFlight={trackingLeg.number}
+          onClose={() => setTrackingLeg(null)}
+        />
+      )}
     </div>
   )
 }
 
 // ─── JourneyTimeline (view mode) ──────────────────────────────────────────────
 
-function JourneyTimeline({ legs, members, currentUser, onEdit, onDelete, canEditFn }) {
+function JourneyTimeline({ legs, members, currentUser, onEdit, onDelete, canEditFn, onTrack }) {
+  const hour12 = isHour12(currentUser?.time_format)
   // Sort legs by depart_at
   const sorted = [...legs].sort((a, b) => {
     const at = a.depart_at || ''
@@ -1047,10 +1126,10 @@ function JourneyTimeline({ legs, members, currentUser, onEdit, onDelete, canEdit
               <div className="flex-1 pb-3 min-w-0">
                 <div className="flex items-start justify-between gap-2">
                   <div className="flex-1 min-w-0">
-                    <p className="text-sm font-medium" style={{ color: '#d4cfc8' }}>{leg.from || '—'}</p>
+                    <p className="text-sm font-medium truncate" style={{ color: '#d4cfc8' }}>{leg.from || '—'}</p>
                     {leg.depart_at && (
                       <p className="text-xs" style={{ color: '#5a5248' }}>
-                        {formatDT(leg.depart_at, leg.depart_tz)}
+                        {formatDT(leg.depart_at, leg.depart_tz, hour12)}
                       </p>
                     )}
                   </div>
@@ -1078,8 +1157,16 @@ function JourneyTimeline({ legs, members, currentUser, onEdit, onDelete, canEdit
                   </div>
                   {leg.depart_at && leg.arrive_at && (
                     <span className="text-xs" style={{ color: '#3d3830' }}>
-                      {durationLabel(leg.depart_at, leg.arrive_at)}
+                      {durationLabel(leg.depart_at, leg.arrive_at, leg.depart_tz, leg.arrive_tz || leg.depart_tz)}
                     </span>
+                  )}
+                  {isTrackable(leg) && onTrack && (
+                    <button onClick={() => onTrack(leg)}
+                      className="flex items-center gap-1 text-xs px-2 py-0.5 rounded-full transition-all active:scale-95"
+                      style={{ background: 'rgba(122,154,181,0.12)', border: '1px solid rgba(122,154,181,0.25)', color: '#7a9ab5' }}
+                      title="Track this flight live">
+                      <Radar size={9} />Track live
+                    </button>
                   )}
                   {sharedNames.length > 0 && (
                     <span className="flex items-center gap-1 text-xs px-2 py-0.5 rounded-full"
@@ -1100,10 +1187,10 @@ function JourneyTimeline({ legs, members, currentUser, onEdit, onDelete, canEdit
                   {!isLast && <div className="w-px" style={{ height: 8, background: 'rgba(212,184,122,0.15)' }} />}
                 </div>
                 <div className="flex-1 pb-3 min-w-0">
-                  <p className="text-sm font-medium" style={{ color: '#d4cfc8' }}>{leg.to || '—'}</p>
+                  <p className="text-sm font-medium truncate" style={{ color: '#d4cfc8' }}>{leg.to || '—'}</p>
                   {leg.arrive_at && (
                     <p className="text-xs" style={{ color: '#5a5248' }}>
-                      {formatDT(leg.arrive_at, leg.arrive_tz || leg.depart_tz)}
+                      {formatDT(leg.arrive_at, leg.arrive_tz || leg.depart_tz, hour12)}
                     </p>
                   )}
                 </div>
@@ -1132,7 +1219,14 @@ function AccommodationRow({ accom, members, currentUser, onEdit, onDelete, canEd
           <span className="text-base flex-shrink-0 mt-0.5">🏨</span>
           <div className="flex-1 min-w-0">
             <p className="text-sm font-medium" style={{ color: '#d4cfc8' }}>{accom.name || 'Accommodation'}</p>
-            {accom.address && <p className="text-xs mt-0.5" style={{ color: '#5a5248' }}>{accom.address}</p>}
+            {accom.address && (
+              <button onClick={() => openInMaps(accom.address || accom.name)}
+                className="flex items-start gap-1 text-xs mt-0.5 text-left transition-opacity active:opacity-60"
+                style={{ color: '#7a9ab5' }} title="Open in Maps">
+                <MapPin size={10} className="mt-0.5 flex-shrink-0" />
+                <span className="underline decoration-dotted underline-offset-2">{accom.address}</span>
+              </button>
+            )}
             <div className="flex items-center gap-2 mt-1.5 flex-wrap">
               {(accom.check_in || accom.check_out) && (
                 <span className="text-xs px-2 py-0.5 rounded-full"

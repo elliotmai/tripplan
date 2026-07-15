@@ -5,6 +5,9 @@ import {
 } from 'firebase/firestore'
 import { db } from '../lib/firebase'
 import { fetchWeatherForTrip } from '../lib/weather'
+import { openInMaps } from '../lib/maps'
+import { useAuth } from '../contexts/AuthContext'
+import { formatTemp, isHour12, formatClock } from '../lib/format'
 import { downloadICS, downloadCombinedICS } from '../lib/ical'
 import { normalizeLegs, normalizeAccommodations } from '../lib/travel'
 import { format } from 'date-fns'
@@ -39,7 +42,7 @@ const TRANSPORT_META = {
 
 // Default times used to slot check-ins / check-outs into the day's order when
 // no explicit time was provided on the accommodation.
-const DEFAULT_CHECKIN_TIME  = '16:00'  // 4:00 PM
+const DEFAULT_CHECKIN_TIME = '16:00'  // 4:00 PM
 const DEFAULT_CHECKOUT_TIME = '11:00'  // 11:00 AM
 
 // assigned_to is now an array of member IDs, or [] for "none", or ['__all__'] sentinel for "everyone"
@@ -54,39 +57,28 @@ const BLANK_FORM = {
 
 // ─── helpers ──────────────────────────────────────────────────────────────────
 
-function formatTime(dt) {
+// `dt` is a wall-clock string ("2024-06-15T14:30") already expressed in the
+// leg's own zone, so we read the HH:MM straight off it. Passing it through
+// `new Date()` would re-interpret it in the *browser's* zone and shift the time.
+function formatTime(dt, hour12 = true) {
   if (!dt) return null
-  try {
-    return new Date(dt).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' })
-  } catch { return null }
+  const timePart = dt.slice(11, 16)
+  if (!/^\d{2}:\d{2}$/.test(timePart)) return null
+  return formatClock(timePart, hour12 ? '12' : '24')
 }
 
-// Format a HH:MM string (e.g. "16:00") as "4:00 PM".
-function formatHM(hm) {
+// Format a HH:MM string (e.g. "16:00") as "4:00 PM" or "16:00".
+function formatHM(hm, hour12 = true) {
   if (!hm) return ''
-  const [hRaw, mRaw] = hm.split(':')
-  const h = Number(hRaw), m = Number(mRaw || 0)
-  if (Number.isNaN(h)) return ''
-  const d = new Date(2000, 0, 1, h, m)
-  return d.toLocaleTimeString('en-US', {
-    hour: 'numeric',
-    minute: m === 0 ? undefined : '2-digit',
-  })
+  return formatClock(hm.slice(0, 5), hour12 ? '12' : '24')
 }
 
-function formatTimeRange(start, end) {
+function formatTimeRange(start, end, hour12 = true) {
   if (!start) return null
-  const s = start.slice(0, 5)
+  const tf = hour12 ? '12' : '24'
+  const s = formatClock(start.slice(0, 5), tf)
   if (!end) return s
-  const e = end.slice(0, 5)
-  try {
-    const fmt = t => {
-      const [h, m] = t.split(':').map(Number)
-      const d = new Date(2000, 0, 1, h, m)
-      return d.toLocaleTimeString('en-US', { hour: 'numeric', minute: m === 0 ? undefined : '2-digit' })
-    }
-    return `${fmt(s)} – ${fmt(e)}`
-  } catch { return `${s} – ${e}` }
+  return `${s} – ${formatClock(end.slice(0, 5), tf)}`
 }
 
 // Convert the stored assigned_to field (legacy string | array | null) → { assignees, assignAll }
@@ -116,7 +108,7 @@ function serializeAssigned(assignAll, assignees, allMemberIds) {
 // Takes the unified legs array (from normalizeLegs) — each entry already carries
 // traveler_names so we don't need to look anything up.
 
-function buildTravelByDate(legs) {
+function buildTravelByDate(legs, hour12 = true) {
   const byDate = {}
   function push(dateStr, card) {
     if (!dateStr) return
@@ -126,18 +118,18 @@ function buildTravelByDate(legs) {
   legs.forEach(leg => {
     const firstNames = (leg.traveler_names || []).map(n => n.split(' ')[0])
     const name = firstNames.length === 0 ? 'Someone'
-                : firstNames.length === 1 ? firstNames[0]
-                : firstNames.length === 2 ? firstNames.join(' & ')
-                : `${firstNames[0]} +${firstNames.length - 1}`
+      : firstNames.length === 1 ? firstNames[0]
+        : firstNames.length === 2 ? firstNames.join(' & ')
+          : `${firstNames[0]} +${firstNames.length - 1}`
     const meta = TRANSPORT_META[leg.transport] || TRANSPORT_META.other
     const depDate = leg.depart_at?.slice(0, 10)
     const arrDate = leg.arrive_at?.slice(0, 10)
     const sameDay = depDate && arrDate && depDate === arrDate
     if (leg.depart_at) {
-      push(depDate, { kind: 'depart', name, transport: leg.transport, number: leg.number, from: leg.from, to: leg.to, depart_time: formatTime(leg.depart_at), arrive_time: sameDay ? formatTime(leg.arrive_at) : null, meta, _sortAt: leg.depart_at })
+      push(depDate, { kind: 'depart', name, transport: leg.transport, number: leg.number, from: leg.from, to: leg.to, depart_time: formatTime(leg.depart_at, hour12), arrive_time: sameDay ? formatTime(leg.arrive_at, hour12) : null, meta, _sortAt: leg.depart_at })
     }
     if (leg.arrive_at && !sameDay) {
-      push(arrDate, { kind: 'arrive', name, transport: leg.transport, number: leg.number, from: leg.from, to: leg.to, depart_time: null, arrive_time: formatTime(leg.arrive_at), meta, _sortAt: leg.arrive_at })
+      push(arrDate, { kind: 'arrive', name, transport: leg.transport, number: leg.number, from: leg.from, to: leg.to, depart_time: null, arrive_time: formatTime(leg.arrive_at, hour12), meta, _sortAt: leg.arrive_at })
     }
   })
   Object.keys(byDate).forEach(d => {
@@ -168,9 +160,9 @@ function buildAccomsByDate(accoms) {
 
     const firstNames = (accom.traveler_names || []).map(n => n.split(' ')[0])
     const travelerName = firstNames.length === 0 ? 'Someone'
-                      : firstNames.length === 1 ? firstNames[0]
-                      : firstNames.length === 2 ? firstNames.join(' & ')
-                      : `${firstNames[0]} +${firstNames.length - 1}`
+      : firstNames.length === 1 ? firstNames[0]
+        : firstNames.length === 2 ? firstNames.join(' & ')
+          : `${firstNames[0]} +${firstNames.length - 1}`
 
     // Generate every date from check_in to check_out (inclusive)
     const dates = []
@@ -181,7 +173,7 @@ function buildAccomsByDate(accoms) {
       cur.setDate(cur.getDate() + 1)
     }
 
-    const explicitCheckinTime  = accom.check_in_time || ''
+    const explicitCheckinTime = accom.check_in_time || ''
     const explicitCheckoutTime = accom.check_out_time || ''
 
     dates.forEach((dateStr, idx) => {
@@ -441,8 +433,9 @@ function EventEditForm({ form, setForm, members, saving, onSave, onCancel }) {
 // ─── Event row (view mode) ────────────────────────────────────────────────────
 
 function EventItem({ event, members, onEdit, onDelete, canEdit }) {
+  const { user } = useAuth()
   const typeInfo = EVENT_TYPES.find(t => t.value === event.type) || EVENT_TYPES[0]
-  const timeLabel = formatTimeRange(event.time, event.end_time)
+  const timeLabel = formatTimeRange(event.time, event.end_time, isHour12(user?.time_format))
   const allIds = members.map(m => m.id)
   const { assignees, assignAll } = parseAssigned(event.assigned_to, allIds)
 
@@ -494,9 +487,11 @@ function EventItem({ event, members, onEdit, onDelete, canEdit }) {
             </span>
           )}
           {event.location && (
-            <span className="flex items-center gap-1 text-xs" style={{ color: '#5a5248' }}>
-              <MapPin size={9} />{event.location}
-            </span>
+            <button onClick={() => openInMaps(event.location)}
+              className="flex items-center gap-1 text-xs transition-opacity active:opacity-60"
+              style={{ color: '#7a9ab5' }} title="Open in Maps">
+              <MapPin size={9} /><span className="underline decoration-dotted underline-offset-2">{event.location}</span>
+            </button>
           )}
           {assigneeLabel && (
             <span className="flex items-center gap-1 text-xs px-2 py-0.5 rounded-full"
@@ -750,9 +745,12 @@ export default function ItineraryTab({
   const [saving, setSaving] = useState(false)
   const [exportScope, setExportScope] = useState(null)
 
-  const allLegs   = normalizeLegs({ legacyDetails: travelDetails, sharedLegs, members })
+  const tempUnit = currentUser?.temp_unit || 'C'
+  const hour12 = isHour12(currentUser?.time_format)
+
+  const allLegs = normalizeLegs({ legacyDetails: travelDetails, sharedLegs, members })
   const allAccoms = normalizeAccommodations({ legacyDetails: travelDetails, sharedAccoms, members })
-  const travelByDate = buildTravelByDate(allLegs)
+  const travelByDate = buildTravelByDate(allLegs, hour12)
   const accomsByDate = buildAccomsByDate(allAccoms)
   const allMemberIds = members.map(m => m.id)
 
@@ -871,8 +869,8 @@ export default function ItineraryTab({
         // Middle "stay" nights have no time — render as context cards above
         // the chronological list. Check-ins and check-outs are interleaved
         // with travel + events using their (real or default) time.
-        const dayStays     = dayAccoms.filter(a => a.kind === 'stay')
-        const dayCheckins  = dayAccoms.filter(a => a.kind === 'checkin')
+        const dayStays = dayAccoms.filter(a => a.kind === 'stay')
+        const dayCheckins = dayAccoms.filter(a => a.kind === 'checkin')
         const dayCheckouts = dayAccoms.filter(a => a.kind === 'checkout')
         const totalItems = dayEvents.length + dayTravel.length + dayAccoms.length
         const isOpen = expandedDay === idx
@@ -919,9 +917,9 @@ export default function ItineraryTab({
                     {dayWeather && (
                       <span className="flex items-center gap-1 text-xs" style={{ color: '#5a5248' }}>
                         <span>{dayWeather.icon}</span>
-                        <span style={{ color: '#b5aea4' }}>{dayWeather.maxTemp}°</span>
+                        <span style={{ color: '#b5aea4' }}>{formatTemp(dayWeather.maxTemp, tempUnit)}</span>
                         <span>/</span>
-                        <span>{dayWeather.minTemp}°</span>
+                        <span>{formatTemp(dayWeather.minTemp, tempUnit)}</span>
                       </span>
                     )}
                     {dayEvents.length > 0 && (
@@ -975,7 +973,7 @@ export default function ItineraryTab({
                     <div>
                       <p className="text-sm" style={{ color: '#d4cfc8' }}>{dayWeather.label}</p>
                       <p className="text-xs" style={{ color: '#5a5248' }}>
-                        {dayWeather.maxTemp}° high · {dayWeather.minTemp}° low
+                        {formatTemp(dayWeather.maxTemp, tempUnit)} high · {formatTemp(dayWeather.minTemp, tempUnit)} low
                         {dayWeather.precipProb > 20 ? ` · ${dayWeather.precipProb}% rain` : ''}
                       </p>
                     </div>
@@ -1136,15 +1134,16 @@ function TravelCard({ card }) {
 // ─── Accommodation card ──────────────────────────────────────────────────────
 
 const ACCOM_KIND_META = {
-  checkin:  { icon: '🏨', label: 'Check in',   color: '#7a9ab5' },
-  stay:     { icon: '🛏️', label: 'Staying at', color: '#8aab8e' },
-  checkout: { icon: '🚪', label: 'Check out',  color: '#c47c5a' },
+  checkin: { icon: '🏨', label: 'Check in', color: '#7a9ab5' },
+  stay: { icon: '🛏️', label: 'Staying at', color: '#8aab8e' },
+  checkout: { icon: '🚪', label: 'Check out', color: '#c47c5a' },
 }
 
 function AccommodationCard({ card }) {
+  const { user } = useAuth()
   const meta = ACCOM_KIND_META[card.kind] || ACCOM_KIND_META.stay
   const c = meta.color
-  const timeLabel = card.time ? formatHM(card.time) : ''
+  const timeLabel = card.time ? formatHM(card.time, isHour12(user?.time_format)) : ''
   return (
     <div className="px-3 py-2.5 rounded-xl" style={{ background: `${c}12`, border: `1px solid ${c}28` }}>
       <div className="flex items-start gap-2">
@@ -1165,9 +1164,11 @@ function AccommodationCard({ card }) {
             {card.name || 'Accommodation'}
           </p>
           {card.address && (
-            <p className="text-xs flex items-center gap-1 mt-0.5 truncate" style={{ color: '#5a5248' }}>
-              <MapPin size={8} />{card.address}
-            </p>
+            <button onClick={() => openInMaps(card.address || card.name)}
+              className="text-xs flex items-center gap-1 mt-0.5 truncate text-left transition-opacity active:opacity-60"
+              style={{ color: '#7a9ab5' }} title="Open in Maps">
+              <MapPin size={8} /><span className="underline decoration-dotted underline-offset-2 truncate">{card.address}</span>
+            </button>
           )}
         </div>
       </div>
@@ -1178,8 +1179,9 @@ function AccommodationCard({ card }) {
 // Thin one-line strip used for checkouts — less visual weight than a card,
 // since "leaving the hotel" is usually just a side-note to the rest of the day.
 function CheckoutLine({ card }) {
+  const { user } = useAuth()
   const meta = ACCOM_KIND_META.checkout
-  const timeLabel = card.time ? formatHM(card.time) : ''
+  const timeLabel = card.time ? formatHM(card.time, isHour12(user?.time_format)) : ''
   return (
     <div className="flex items-center gap-2 px-2 py-1 text-xs">
       <span className="text-xs flex-shrink-0">{meta.icon}</span>

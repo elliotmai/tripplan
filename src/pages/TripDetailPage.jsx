@@ -5,10 +5,11 @@ import { db } from '../lib/firebase'
 import { useAuth } from '../contexts/AuthContext'
 import { ensureTripFriendships } from '../lib/friends'
 import { format, parseISO, eachDayOfInterval } from 'date-fns'
-import { ArrowLeft, Pencil, MapPin, Calendar, Users, CalendarDays } from 'lucide-react'
+import { ArrowLeft, Pencil, MapPin, Calendar, Users, CalendarDays, Eye } from 'lucide-react'
 import ItineraryTab from '../components/ItineraryTab'
 import TravelersTab from '../components/TravelersTab'
 import PollsTab from '../components/PollsTab'
+import BrainstormTab from '../components/BrainstormTab'
 import PhotosTab from '../components/PhotosTab'
 import DatesTab from '../components/DatesTab'
 import EditTripSheet from '../components/EditTripSheet'
@@ -16,10 +17,11 @@ import CalendarSubscribeSheet from '../components/CalendarSubscribeSheet'
 
 const TABS = [
   { id: 'itinerary', label: 'Itinerary' },
-  { id: 'dates',     label: 'Dates' },
+  { id: 'dates', label: 'Dates' },
   { id: 'travelers', label: 'Travelers' },
-  { id: 'polls',     label: 'Polls' },
-  { id: 'photos',    label: 'Photos' },
+  { id: 'ideas', label: 'Ideas' },
+  { id: 'polls', label: 'Polls' },
+  { id: 'photos', label: 'Photos' },
 ]
 
 export default function TripDetailPage() {
@@ -29,6 +31,7 @@ export default function TripDetailPage() {
 
   const [trip, setTrip] = useState(null)
   const [members, setMembers] = useState([])
+  const [isObserver, setIsObserver] = useState(false)
   const [travelDetails, setTravelDetails] = useState([])
   const [sharedLegs, setSharedLegs] = useState([])
   const [sharedAccoms, setSharedAccoms] = useState([])
@@ -44,7 +47,7 @@ export default function TripDetailPage() {
   async function refreshPollUnread() {
     if (!user?.id) return
     const [pollSnap, voteSnap] = await Promise.all([
-      getDocs(query(collection(db, 'polls'),      where('trip_id', '==', id))),
+      getDocs(query(collection(db, 'polls'), where('trip_id', '==', id))),
       getDocs(query(collection(db, 'poll_votes'), where('trip_id', '==', id))),
     ])
     const myPollIds = new Set(
@@ -78,12 +81,29 @@ export default function TripDetailPage() {
       })
     )
     setMembers(memberData)
+
+    // Am I an observer here (viewing without travelling)? Used to show an
+    // "Observing" badge and keep the trip read-only for me.
+    if (user?.id) {
+      const iAmMember = memberData.some(m => m.id === user.id)
+      if (iAmMember) {
+        setIsObserver(false)
+      } else {
+        const obsSnap = await getDocs(query(
+          collection(db, 'trip_observers'),
+          where('trip_id', '==', id),
+          where('user_id', '==', user.id),
+        ))
+        setIsObserver(!obsSnap.empty)
+      }
+    }
+
     setLoading(false)
 
     // Auto-friend every trip mate (idempotent — only writes friendship docs that
     // include the current user, so it stays inside the rules).
     if (user?.id && memberData.length > 1) {
-      ensureTripFriendships(user.id, memberData.map(m => m.id), id).catch(() => {})
+      ensureTripFriendships(user.id, memberData.map(m => m.id), id).catch(() => { })
     }
   }
 
@@ -186,6 +206,13 @@ export default function TripDetailPage() {
             <Users size={10} />
             {members.length} traveler{members.length !== 1 ? 's' : ''}
           </div>
+          {isObserver && (
+            <div className="flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs"
+              style={{ background: 'rgba(122,154,181,0.12)', color: '#7a9ab5', border: '1px solid rgba(122,154,181,0.25)' }}>
+              <Eye size={10} />
+              Observing
+            </div>
+          )}
         </div>
       </div>
 
@@ -241,6 +268,7 @@ export default function TripDetailPage() {
             sharedLegs={sharedLegs}
             sharedAccoms={sharedAccoms}
             currentUser={user}
+            readOnly={isObserver}
           />
         )}
         {activeTab === 'dates' && (
@@ -250,6 +278,7 @@ export default function TripDetailPage() {
             members={members}
             currentUser={user}
             onTripUpdated={loadTrip}
+            readOnly={isObserver}
           />
         )}
         {activeTab === 'travelers' && (
@@ -262,13 +291,17 @@ export default function TripDetailPage() {
             sharedAccoms={sharedAccoms}
             currentUser={user}
             onUpdate={loadTrip}
+            readOnly={isObserver}
           />
         )}
+        {activeTab === 'ideas' && (
+          <BrainstormTab tripId={id} members={members} currentUser={user} readOnly={isObserver} />
+        )}
         {activeTab === 'polls' && (
-          <PollsTab tripId={id} currentUser={user} onPollsChanged={refreshPollUnread} />
+          <PollsTab tripId={id} currentUser={user} onPollsChanged={refreshPollUnread} readOnly={isObserver} />
         )}
         {activeTab === 'photos' && (
-          <PhotosTab tripId={id} />
+          <PhotosTab tripId={id} readOnly={isObserver} />
         )}
       </div>
 

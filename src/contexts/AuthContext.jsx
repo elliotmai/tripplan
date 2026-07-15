@@ -43,6 +43,7 @@ export function AuthProvider({ children }) {
     const profileData = {
       id: newUser.uid, email, full_name: name,
       home_airport: '', home_city: '',
+      temp_unit: 'C', time_format: '12',
       created_at: serverTimestamp(),
     }
     await setDoc(doc(db, 'profiles', newUser.uid), profileData)
@@ -63,6 +64,16 @@ export function AuthProvider({ children }) {
     const updates = { full_name, home_airport, home_city, updated_at: serverTimestamp() }
     await updateDoc(doc(db, 'profiles', uid), updates)
     await firebaseUpdateProfile(auth.currentUser, { displayName: full_name })
+    setProfile(prev => ({ ...prev, ...updates }))
+  }
+
+  // Display preferences (temperature unit, clock format). Merged straight onto
+  // the profile so they're readable app-wide via useAuth().user.
+  async function updatePreferences(prefs) {
+    const uid = auth.currentUser?.uid
+    if (!uid) return
+    const updates = { ...prefs, updated_at: serverTimestamp() }
+    await updateDoc(doc(db, 'profiles', uid), updates)
     setProfile(prev => ({ ...prev, ...updates }))
   }
 
@@ -116,7 +127,7 @@ export function AuthProvider({ children }) {
     <AuthContext.Provider value={{
       user: mergedUser, loading,
       signUp, signIn, signOut,
-      updateProfileData, deleteAccount,
+      updateProfileData, updatePreferences, deleteAccount,
     }}>
       {children}
     </AuthContext.Provider>

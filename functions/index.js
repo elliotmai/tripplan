@@ -578,3 +578,116 @@ exports.calendarFeed = functions.https.onRequest(async (req, res) => {
   res.set('Cache-Control', 'public, max-age=3600')
   res.send(icsContent)
 })
+
+// ─── Flight tracking proxy (Flightradar24) ───────────────────────────────────
+// Keeps the FR24 API token server-side — it must never ship in the client
+// bundle. Set it before deploying, e.g. add to functions/.env:
+//     FR24_API_KEY=your_token_here
+// (or `firebase functions:secrets:set FR24_API_KEY`). Returns a normalized,
+// slimmed-down position for a given flight number so the client just plots it.
+
+// Short-lived in-memory cache, keyed by flight number. Positions barely change
+// second-to-second, and this collapses bursts (React re-renders, multiple
+// travelers/tabs watching the same flight) into a single upstream call — the
+// main defense against FR24's per-minute rate limit. Best-effort: it lives only
+// on a warm instance, but that's exactly where bursts land.
+const FR24_CACHE = new Map() // flight -> { ts, payload }
+const FR24_TTL_MS = 30_000
+
+function normalizeFR24(ac) {
+  if (!ac) return null
+  return {
+    flight:    ac.flight || ac.callsign || null,
+    callsign:  ac.callsign || null,
+    lat:       typeof ac.lat === 'number' ? ac.lat : null,
+    lon:       typeof ac.lon === 'number' ? ac.lon : null,
+    track:     ac.track ?? null,        // heading in degrees, for marker rotation
+    alt:       ac.alt ?? null,          // feet
+    gspeed:    ac.gspeed ?? null,       // knots
+    vspeed:    ac.vspeed ?? null,
+    orig_iata: ac.orig_iata || null,
+    dest_iata: ac.dest_iata || null,
+    type:      ac.type || null,         // aircraft type e.g. B738
+    reg:       ac.reg || null,
+    eta:       ac.eta || null,
+    timestamp: ac.timestamp || null,
+    source:    ac.source || null,
+  }
+}
+
+exports.trackFlight = functions.https.onRequest(async (req, res) => {
+  res.set('Access-Control-Allow-Origin', '*')
+  if (req.method === 'OPTIONS') {
+    res.set('Access-Control-Allow-Methods', 'GET')
+    res.set('Access-Control-Allow-Headers', 'Content-Type')
+    res.set('Access-Control-Max-Age', '3600')
+    return res.status(204).send('')
+  }
+
+  const token = (process.env.FR24_API_KEY || '').trim()
+  if (!token) {
+    // Distinct code so the UI can show a "not configured" state rather than an error.
+    return res.status(503).json({ error: 'not_configured' })
+  }
+
+  const raw = (req.query.flight || '').toString().toUpperCase().replace(/\s+/g, '')
+  if (!raw) return res.status(400).json({ error: 'missing_flight' })
+
+  // Serve a fresh cached result if we have one — no upstream call, no credit spend.
+  const cached = FR24_CACHE.get(raw)
+  if (cached && Date.now() - cached.ts < FR24_TTL_MS) {
+    res.set('Cache-Control', 'no-store')
+    return res.status(200).json({ ...cached.payload, cached: true })
+  }
+
+  const url = `https://fr24api.flightradar24.com/api/live/flight-positions/full`
+            + `?flights=${encodeURIComponent(raw)}`
+
+  try {
+    const r = await fetch(url, {
+      headers: {
+        'Accept':         'application/json',
+        'Accept-Version': 'v1',
+        'Authorization':  `Bearer ${token}`,
+      },
+    })
+
+    if (!r.ok) {
+      const body = await r.text().catch(() => '')
+      console.error('FR24 error', r.status, body.slice(0, 500))
+      // On a rate-limit, serve stale cache if we have any — better than an error.
+      if (r.status === 429 && cached) {
+        res.set('Cache-Control', 'no-store')
+        return res.status(200).json({ ...cached.payload, cached: true, stale: true })
+      }
+      // Surface the real cause so it's visible in the browser Network tab.
+      // 401/403 → key or plan problem; 402 → out of credits; 429 → rate limited.
+      return res.status(502).json({
+        error: 'upstream',
+        status: r.status,
+        detail: body.slice(0, 300),
+      })
+    }
+
+    const json = await r.json()
+    const list = Array.isArray(json?.data) ? json.data : []
+    // A flight number can occasionally match more than one hull (code-shares,
+    // repositioning). Prefer an airborne ADS-B contact; fall back to the first.
+    const best = list.find(a => a.source === 'ADSB' && typeof a.lat === 'number') || list[0]
+    const position = normalizeFR24(best)
+
+    const payload = {
+      flight:   raw,
+      airborne: !!(position && position.lat != null && position.lon != null),
+      position: position || null,
+      count:    list.length,
+    }
+    FR24_CACHE.set(raw, { ts: Date.now(), payload })
+
+    res.set('Cache-Control', 'no-store')
+    return res.status(200).json(payload)
+  } catch (err) {
+    console.error('trackFlight failed', err)
+    return res.status(500).json({ error: 'internal' })
+  }
+})

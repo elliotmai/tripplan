@@ -132,19 +132,84 @@ export function nearestTimezone(ianaId) {
   return fallback?.id || 'UTC'
 }
 
-// Format a datetime-local value + IANA timezone into a human-readable string
-// e.g. "2024-06-15T14:30" + "Asia/Tokyo" → "Jun 15, 2024, 2:30 PM JST"
-export function formatWithTZ(datetimeLocal, tzId) {
-  if (!datetimeLocal || !tzId) return null
+// ─── Wall-clock ↔ instant conversion ─────────────────────────────────────────
+//
+// IMPORTANT: legs/accommodations store a *wall-clock* string ("2024-06-15T14:30")
+// PLUS a separate IANA zone ("Asia/Tokyo"). The string means "2:30 PM in Tokyo",
+// NOT "2:30 PM in the viewer's browser zone".
+//
+// `new Date("2024-06-15T14:30")` parses that string in the *browser's* local zone
+// (per the ECMAScript spec, a date-time string with no offset is local time). So
+// calling `.toLocaleString({ timeZone })` on it re-projects the wrong instant and
+// shows a time that's off by (browser offset − leg offset). The helpers below
+// interpret the wall-clock string *as* a time in its stated zone instead.
+
+// Offset (ms) of tzId at a given UTC instant, such that local = utc + offset.
+function tzOffsetMs(utcMillis, tzId) {
+  const p = Object.fromEntries(
+    new Intl.DateTimeFormat('en-US', {
+      timeZone: tzId, hour12: false,
+      year: 'numeric', month: '2-digit', day: '2-digit',
+      hour: '2-digit', minute: '2-digit', second: '2-digit',
+    }).formatToParts(new Date(utcMillis)).map(x => [x.type, x.value])
+  )
+  const hour = Number(p.hour) % 24 // some engines emit '24' for midnight
+  const asUTC = Date.UTC(+p.year, +p.month - 1, +p.day, hour, +p.minute, +p.second)
+  return asUTC - utcMillis
+}
+
+// Interpret a datetime-local string as a wall-clock time in tzId → real Date (UTC instant).
+// With no tzId, falls back to browser-local (matches a bare `new Date(...)`).
+export function wallClockToInstant(datetimeLocal, tzId) {
+  if (!datetimeLocal) return null
+  const [datePart, timePart] = datetimeLocal.slice(0, 16).split('T')
+  if (!datePart || !timePart) return null
+  const [y, mo, d] = datePart.split('-').map(Number)
+  const [h, mi]    = timePart.split(':').map(Number)
+  if ([y, mo, d, h, mi].some(Number.isNaN)) return null
+  if (!tzId) return new Date(y, mo - 1, d, h, mi)
+  const guess = Date.UTC(y, mo - 1, d, h, mi)
+  const off   = tzOffsetMs(guess, tzId)
+  let inst    = guess - off
+  const off2  = tzOffsetMs(inst, tzId) // second pass corrects DST-boundary skew
+  if (off2 !== off) inst = guess - off2
+  return new Date(inst)
+}
+
+// Format a datetime-local value + IANA timezone into a human-readable string,
+// rendered in the leg's own zone so the number shown matches what was entered.
+// e.g. "2024-06-15T14:30" + "Asia/Tokyo" → "Jun 15, 2024, 2:30 PM GMT+9"
+export function formatWithTZ(datetimeLocal, tzId, opts = {}) {
+  if (!datetimeLocal) return null
+  const inst = wallClockToInstant(datetimeLocal, tzId)
+  if (!inst) return datetimeLocal
   try {
-    const date = new Date(datetimeLocal)
-    return date.toLocaleString('en-US', {
-      timeZone: tzId,
-      month: 'short', day: 'numeric', year: 'numeric',
+    return inst.toLocaleString('en-US', {
+      timeZone: tzId || undefined,
+      month: 'short', day: 'numeric',
+      ...(opts.year === false ? {} : { year: 'numeric' }),
       hour: '2-digit', minute: '2-digit',
-      timeZoneName: 'short',
+      timeZoneName: tzId ? 'short' : undefined,
     })
   } catch {
     return datetimeLocal
   }
+}
+
+// Duration in minutes between two wall-clock+zone pairs, computed on true
+// instants so cross-timezone legs (e.g. Tokyo → LA) are correct. Returns null
+// if either side is missing or the result is negative.
+export function durationMinutes(fromLocal, fromTz, toLocal, toTz) {
+  const a = wallClockToInstant(fromLocal, fromTz)
+  const b = wallClockToInstant(toLocal, toTz ?? fromTz)
+  if (!a || !b) return null
+  const mins = Math.round((b - a) / 60000)
+  return mins >= 0 ? mins : null
+}
+
+// "9h 25m" / "45m" from a minute count.
+export function formatDuration(mins) {
+  if (mins == null) return null
+  const h = Math.floor(mins / 60), m = mins % 60
+  return h > 0 ? `${h}h${m > 0 ? ' ' + m + 'm' : ''}` : `${m}m`
 }

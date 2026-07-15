@@ -70,6 +70,36 @@ service cloud.firestore {
                     && resource.data.user_id == request.auth.uid;
     }
 
+    // TRIP OBSERVERS (BCC-style viewers)
+    // Someone added to a trip to view it without travelling. The "observers
+    // can't see each other / travellers only see observers they added" rule is
+    // enforced in the UI (see the note in the app); at the data layer we just
+    // require you to own the observer docs you create or remove.
+    match /trip_observers/{obsId} {
+      allow read:   if request.auth != null;
+      allow create: if request.auth != null
+                    && request.resource.data.added_by == request.auth.uid;
+      allow delete: if request.auth != null
+                    && resource.data.added_by == request.auth.uid;
+    }
+
+    // BRAINSTORM IDEAS
+    // Idea board. Any trip mate can add an idea and toggle their upvote (which
+    // is a write to liked_by), so update is open like other shared collections;
+    // only the author can delete the idea itself.
+    match /brainstorm_ideas/{ideaId} {
+      allow read, create, update: if request.auth != null;
+      allow delete: if request.auth != null
+                    && resource.data.created_by == request.auth.uid;
+    }
+
+    // BRAINSTORM COMMENTS
+    match /brainstorm_comments/{commentId} {
+      allow read, create: if request.auth != null;
+      allow delete: if request.auth != null
+                    && resource.data.created_by == request.auth.uid;
+    }
+
     // PHOTO ALBUMS
     match /photo_albums/{albumId} {
       allow read, create:   if request.auth != null;

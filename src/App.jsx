@@ -6,6 +6,7 @@ import TripDetailPage from './pages/TripDetailPage'
 import AccountPage from './pages/AccountPage'
 import FriendsPage from './pages/FriendsPage'
 import FlightsPage from './pages/FlightsPage'
+import UpcomingTripPage from './pages/UpcomingTripPage'
 
 function AppRoutes() {
   const { user, loading } = useAuth()
@@ -24,9 +25,11 @@ function AppRoutes() {
     <Routes>
       <Route path="/" element={<TripsPage />} />
       <Route path="/trips/:id" element={<TripDetailPage />} />
+      <Route path="/trips/upcoming" element={<UpcomingTripPage />} />
       <Route path="/flights" element={<FlightsPage />} />
       <Route path="/friends" element={<FriendsPage />} />
       <Route path="/account" element={<AccountPage />} />
+      
       <Route path="*" element={<Navigate to="/" />} />
     </Routes>
   )

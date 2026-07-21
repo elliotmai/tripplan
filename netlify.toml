@@ -1,0 +1,10 @@
+# Wander (tripplan) — SPA fallback so client-side routes like /trips/upcoming
+# and /trips/:id resolve when opened directly (e.g. from an Our Den link).
+[build]
+  command = "npm run build"
+  publish = "dist"
+
+[[redirects]]
+  from = "/*"
+  to = "/index.html"
+  status = 200

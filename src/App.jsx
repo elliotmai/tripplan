@@ -24,8 +24,8 @@ function AppRoutes() {
   return (
     <Routes>
       <Route path="/" element={<TripsPage />} />
-      <Route path="/trips/:id" element={<TripDetailPage />} />
       <Route path="/trips/upcoming" element={<UpcomingTripPage />} />
+      <Route path="/trips/:id" element={<TripDetailPage />} />
       <Route path="/flights" element={<FlightsPage />} />
       <Route path="/friends" element={<FriendsPage />} />
       <Route path="/account" element={<AccountPage />} />

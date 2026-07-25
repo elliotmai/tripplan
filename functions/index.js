@@ -691,3 +691,86 @@ exports.trackFlight = functions.https.onRequest(async (req, res) => {
     return res.status(500).json({ error: 'internal' })
   }
 })
+
+// ─── Next shared trip (for Our Den) ──────────────────────────────────────────
+// Our Den is a separate app/project and can't read Wander's database directly,
+// so it asks here: given two members' emails, what's their soonest upcoming
+// shared trip? Returns a slim { trip } for inline display; Our Den falls back to
+// a deep link when this is null. Read-only and unauthenticated — it reveals only
+// a trip's name and dates to someone who already knows both members' emails.
+//   Deep link (already handled by the app): /trips/upcoming?members=a,b
+//   This endpoint:                          /nextSharedTrip?members=a,b
+
+const WANDER_APP_URL = process.env.WANDER_APP_URL || 'https://wander-tripplanner.netlify.app'
+
+// Emails may be stored as typed at signup, so match a couple of casings.
+async function profileUidForEmail(email) {
+  const variants = [...new Set([email.trim(), email.trim().toLowerCase()])].filter(Boolean)
+  for (const v of variants) {
+    const snap = await db.collection('profiles').where('email', '==', v).limit(1).get()
+    if (!snap.empty) return snap.docs[0].id
+  }
+  return null
+}
+
+exports.nextSharedTrip = functions.https.onRequest(async (req, res) => {
+  res.set('Access-Control-Allow-Origin', '*')
+  if (req.method === 'OPTIONS') {
+    res.set('Access-Control-Allow-Methods', 'GET')
+    res.set('Access-Control-Allow-Headers', 'Content-Type')
+    res.set('Access-Control-Max-Age', '3600')
+    return res.status(204).send('')
+  }
+
+  try {
+    const emails = String(req.query.members || '')
+      .split(',')
+      .map(e => e.trim())
+      .filter(Boolean)
+    if (emails.length < 2) return res.json({ trip: null })
+
+    // 1) emails → uids. Bail if either isn't a Wander user.
+    const uids = []
+    for (const email of emails) {
+      const uid = await profileUidForEmail(email)
+      if (!uid) return res.json({ trip: null })
+      uids.push(uid)
+    }
+
+    // 2) uids → their trip_id sets, then intersect to shared trips.
+    const tripSets = await Promise.all(
+      uids.map(async uid => {
+        const snap = await db.collection('trip_members').where('user_id', '==', uid).get()
+        return new Set(snap.docs.map(d => d.data().trip_id))
+      }),
+    )
+    const sharedTripIds = [...tripSets[0]].filter(id => tripSets.every(set => set.has(id)))
+    if (!sharedTripIds.length) return res.json({ trip: null })
+
+    // 3) Load shared trips, keep upcoming ones (start_date is 'YYYY-MM-DD'),
+    //    pick the soonest.
+    const today = new Date().toISOString().slice(0, 10)
+    const trips = await Promise.all(sharedTripIds.map(id => db.collection('trips').doc(id).get()))
+    const upcoming = trips
+      .filter(doc => doc.exists && doc.data().start_date && doc.data().start_date >= today)
+      .map(doc => ({ id: doc.id, ...doc.data() }))
+      .sort((a, b) => a.start_date.localeCompare(b.start_date))
+
+    const soonest = upcoming[0]
+    const trip = soonest
+      ? {
+          id:         soonest.id,
+          name:       soonest.name,
+          start_date: soonest.start_date,
+          end_date:   soonest.end_date ?? null,
+          url:        `${WANDER_APP_URL}/trips/${soonest.id}`,
+        }
+      : null
+
+    res.set('Cache-Control', 'private, max-age=300')
+    return res.json({ trip })
+  } catch (err) {
+    console.error('nextSharedTrip failed', err)
+    return res.status(500).json({ error: 'internal' })
+  }
+})

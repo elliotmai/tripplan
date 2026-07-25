@@ -295,7 +295,7 @@ export default function TripDetailPage() {
           />
         )}
         {activeTab === 'ideas' && (
-          <BrainstormTab tripId={id} members={members} currentUser={user} readOnly={isObserver} />
+          <BrainstormTab tripId={id} trip={trip} days={days} members={members} currentUser={user} readOnly={isObserver} />
         )}
         {activeTab === 'polls' && (
           <PollsTab tripId={id} currentUser={user} onPollsChanged={refreshPollUnread} readOnly={isObserver} />

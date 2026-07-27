@@ -5,6 +5,7 @@ import {
   serverTimestamp,
 } from 'firebase/firestore'
 import { db } from '../lib/firebase'
+import { logActivity, fieldDiff } from '../lib/activity'
 import { geocodeCity } from '../lib/weather'
 import { X, Smile, Trash2, AlertTriangle } from 'lucide-react'
 import TimezonePicker from './TimezonePicker'
@@ -25,7 +26,16 @@ const EMOJI_CATEGORIES = [
   { label: 'Objects',    emojis: ['📸','🎭','🎨','🎬','🎤','🎧','🎼','📷','🔭','🔬','💎','👑','🗺️','🧭','⌚','💼','🎒','👜','🧳','☂️','🌂','🎁','🏮','🪔','🕯️','💡','🔦','📚','📖','✏️'] },
 ]
 
-export default function EditTripSheet({ trip, isOwner = false, onClose, onSaved }) {
+const TRIP_FIELDS = [
+  { key: 'name',        label: 'Name' },
+  { key: 'destination', label: 'Destination' },
+  { key: 'start_date',  label: 'Start date' },
+  { key: 'end_date',    label: 'End date' },
+  { key: 'cover_emoji', label: 'Emoji' },
+  { key: 'timezone',    label: 'Timezone' },
+]
+
+export default function EditTripSheet({ trip, isOwner = false, currentUser, onClose, onSaved }) {
   const navigate = useNavigate()
   const [form, setForm] = useState({
     name:         trip.name        || '',
@@ -59,16 +69,29 @@ export default function EditTripSheet({ trip, isOwner = false, onClose, onSaved 
       if (geo) { lat = geo.lat; lon = geo.lon }
     }
 
-    await updateDoc(doc(db, 'trips', trip.id), {
+    const after = {
       name:        form.name,
       destination: form.destination,
       start_date:  form.start_date  || null,
       end_date:    form.end_date    || null,
       cover_emoji: form.cover_emoji,
       timezone:    form.timezone    || null,
+    }
+    await updateDoc(doc(db, 'trips', trip.id), {
+      ...after,
       lat, lon,
       updated_at:  serverTimestamp(),
     })
+
+    const { lines, prev } = fieldDiff(trip, after, TRIP_FIELDS)
+    if (lines.length) {
+      await logActivity(trip.id, currentUser, {
+        action: 'update', entity: 'trip',
+        summary: 'Updated trip details',
+        details: lines,
+        undo: { ops: [{ op: 'update', collection: 'trips', docId: trip.id, data: prev }] },
+      })
+    }
 
     setSaving(false)
     onSaved()

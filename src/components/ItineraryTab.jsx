@@ -4,6 +4,7 @@ import {
   addDoc, updateDoc, deleteDoc, doc, serverTimestamp
 } from 'firebase/firestore'
 import { db } from '../lib/firebase'
+import { logActivity, fieldDiff, fieldSummaryLines } from '../lib/activity'
 import { fetchWeatherForTrip } from '../lib/weather'
 import { openInMaps } from '../lib/maps'
 import { useAuth } from '../contexts/AuthContext'
@@ -748,6 +749,25 @@ export default function ItineraryTab({
   const tempUnit = currentUser?.temp_unit || 'C'
   const hour12 = isHour12(currentUser?.time_format)
 
+  // Readable label for an assigned_to value, used in the change log.
+  const assignedLabel = raw => {
+    const { assignees, assignAll } = parseAssigned(raw, members.map(m => m.id))
+    if (assignAll) return 'Everyone'
+    if (!assignees.length) return 'No one'
+    return assignees.map(id => members.find(m => m.id === id)?.full_name?.split(' ')[0] || '?').join(', ')
+  }
+
+  // Fields tracked in the trip change log for an itinerary event.
+  const EVENT_FIELDS = [
+    { key: 'title',       label: 'Title' },
+    { key: 'time',        label: 'Start time' },
+    { key: 'end_time',    label: 'End time' },
+    { key: 'type',        label: 'Type', format: v => (EVENT_TYPES.find(t => t.value === v)?.label || v || '—') },
+    { key: 'location',    label: 'Location' },
+    { key: 'assigned_to', label: 'Assigned to', format: assignedLabel },
+    { key: 'notes',       label: 'Notes' },
+  ]
+
   const allLegs = normalizeLegs({ legacyDetails: travelDetails, sharedLegs, members })
   const allAccoms = normalizeAccommodations({ legacyDetails: travelDetails, sharedAccoms, members })
   const travelByDate = buildTravelByDate(allLegs, hour12)
@@ -780,7 +800,7 @@ export default function ItineraryTab({
   async function addEvent(date) {
     if (!addForm.title.trim()) return
     setSaving(true)
-    await addDoc(collection(db, 'itinerary_events'), {
+    const payload = {
       trip_id: tripId,
       date,
       title: addForm.title,
@@ -793,6 +813,13 @@ export default function ItineraryTab({
       timezone: addForm.timezone || trip.timezone || localTimezone() || null,
       created_by: currentUser.id,
       created_at: serverTimestamp(),
+    }
+    const ref = await addDoc(collection(db, 'itinerary_events'), payload)
+    await logActivity(tripId, currentUser, {
+      action: 'create', entity: 'event',
+      summary: `Added event “${payload.title}”`,
+      details: [`Day: ${date}`, ...fieldSummaryLines(payload, EVENT_FIELDS)],
+      undo: { ops: [{ op: 'delete', collection: 'itinerary_events', docId: ref.id }] },
     })
     setAddForm({ ...BLANK_FORM, timezone: trip.timezone || '' })
     setShowAddForm(null)
@@ -802,8 +829,9 @@ export default function ItineraryTab({
 
   async function saveEdit(id) {
     if (!editForm.title.trim()) return
+    const before = events.find(e => e.id === id)
     setSaving(true)
-    await updateDoc(doc(db, 'itinerary_events', id), {
+    const after = {
       title: editForm.title,
       time: editForm.time || null,
       end_time: editForm.end_time || null,
@@ -811,16 +839,38 @@ export default function ItineraryTab({
       notes: editForm.notes || null,
       type: editForm.type,
       assigned_to: serializeAssigned(editForm.assignAll, editForm.assignees, allMemberIds),
+    }
+    await updateDoc(doc(db, 'itinerary_events', id), {
+      ...after,
       timezone: editForm.timezone || trip.timezone || localTimezone() || null,
       updated_at: serverTimestamp(),
     })
+    const { lines, prev } = fieldDiff(before, after, EVENT_FIELDS)
+    if (lines.length) {
+      await logActivity(tripId, currentUser, {
+        action: 'update', entity: 'event',
+        summary: `Edited event “${after.title}”`,
+        details: lines,
+        undo: { ops: [{ op: 'update', collection: 'itinerary_events', docId: id, data: prev }] },
+      })
+    }
     setSaving(false)
     setEditingId(null)
     loadEvents()
   }
 
   async function deleteEvent(id) {
+    const before = events.find(e => e.id === id)
     await deleteDoc(doc(db, 'itinerary_events', id))
+    if (before) {
+      const { id: _i, ...data } = before
+      await logActivity(tripId, currentUser, {
+        action: 'delete', entity: 'event',
+        summary: `Deleted event “${before.title || 'event'}”`,
+        details: [...(before.date ? [`Day: ${before.date}`] : []), ...fieldSummaryLines(before, EVENT_FIELDS)],
+        undo: { ops: [{ op: 'set', collection: 'itinerary_events', docId: id, data }] },
+      })
+    }
     if (editingId === id) setEditingId(null)
     loadEvents()
   }

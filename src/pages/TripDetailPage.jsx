@@ -8,8 +8,8 @@ import { format, parseISO, eachDayOfInterval } from 'date-fns'
 import { ArrowLeft, Pencil, MapPin, Calendar, Users, CalendarDays, Eye } from 'lucide-react'
 import ItineraryTab from '../components/ItineraryTab'
 import TravelersTab from '../components/TravelersTab'
-import PollsTab from '../components/PollsTab'
-import BrainstormTab from '../components/BrainstormTab'
+import IdeasTab from '../components/IdeasTab'
+import HistoryTab from '../components/HistoryTab'
 import PhotosTab from '../components/PhotosTab'
 import DatesTab from '../components/DatesTab'
 import EditTripSheet from '../components/EditTripSheet'
@@ -20,8 +20,8 @@ const TABS = [
   { id: 'dates', label: 'Dates' },
   { id: 'travelers', label: 'Travelers' },
   { id: 'ideas', label: 'Ideas' },
-  { id: 'polls', label: 'Polls' },
   { id: 'photos', label: 'Photos' },
+  { id: 'history', label: 'History' },
 ]
 
 export default function TripDetailPage() {
@@ -225,7 +225,7 @@ export default function TripDetailPage() {
         }}>
         <div className="flex gap-1">
           {TABS.map(tab => {
-            const showPollBadge = tab.id === 'polls' && pollUnreadCount > 0
+            const showPollBadge = tab.id === 'ideas' && pollUnreadCount > 0
             return (
               <button
                 key={tab.id}
@@ -295,13 +295,21 @@ export default function TripDetailPage() {
           />
         )}
         {activeTab === 'ideas' && (
-          <BrainstormTab tripId={id} trip={trip} days={days} members={members} currentUser={user} readOnly={isObserver} />
-        )}
-        {activeTab === 'polls' && (
-          <PollsTab tripId={id} currentUser={user} onPollsChanged={refreshPollUnread} readOnly={isObserver} />
+          <IdeasTab
+            tripId={id}
+            trip={trip}
+            days={days}
+            members={members}
+            currentUser={user}
+            readOnly={isObserver}
+            onPollsChanged={refreshPollUnread}
+          />
         )}
         {activeTab === 'photos' && (
           <PhotosTab tripId={id} readOnly={isObserver} />
+        )}
+        {activeTab === 'history' && (
+          <HistoryTab tripId={id} currentUser={user} readOnly={isObserver} onChanged={loadTrip} />
         )}
       </div>
 
@@ -310,6 +318,7 @@ export default function TripDetailPage() {
         <EditTripSheet
           trip={trip}
           isOwner={isOwner}
+          currentUser={user}
           onClose={() => setShowEdit(false)}
           onSaved={loadTrip}
         />

@@ -4,20 +4,19 @@ import {
   serverTimestamp, arrayUnion, arrayRemove,
 } from 'firebase/firestore'
 import { db } from '../lib/firebase'
+import { logActivity, fieldDiff, fieldSummaryLines } from '../lib/activity'
 import { format } from 'date-fns'
 import {
   Plus, ThumbsUp, MessageCircle, Trash2, X, Check, Send, ExternalLink,
-  Pencil, CalendarPlus,
+  Pencil, CalendarPlus, ChevronDown, ChevronUp,
 } from 'lucide-react'
 
-// Lightweight, low-friction idea board. Polls are for formal decisions; this is
-// the scratchpad where anyone can toss out an idea, others upvote the ones they
-// like, and a short comment thread hangs off each. Sorted by votes so the ideas
-// the group is excited about float to the top. Once the group lands on an idea,
-// "Add to trip" drops it straight into the itinerary as a scheduled event.
+// Ideas + Polls, unified. The idea board is the low-friction scratchpad where
+// anyone floats a place/activity and the group upvotes the best. When it's time
+// to actually decide, you bundle a few ideas into a poll ("A, B or C on
+// Saturday?") and everyone votes. Both live on one tab because they're two steps
+// of the same flow: dream it up, then decide.
 
-// Mirrors ItineraryTab's EVENT_TYPES, so an idea's category is the same value as
-// the itinerary event type it becomes when added to the trip.
 const CATEGORIES = [
   { id: 'activity',      label: 'Activity',     emoji: '🎯' },
   { id: 'food',          label: 'Food & Drink', emoji: '🍽️' },
@@ -30,20 +29,31 @@ const isCategory = id => CATEGORIES.some(c => c.id === id)
 
 const BLANK = { title: '', note: '', links: [''], category: 'activity', date: '', time: '' }
 
-// Ideas used to carry a single `url`; they now hold a `links` array. Read both so
-// pre-existing ideas keep showing their link.
+// Fields tracked in the change log for an idea.
+const IDEA_FIELDS = [
+  { key: 'title',    label: 'Title' },
+  { key: 'note',     label: 'Note' },
+  { key: 'category', label: 'Category', format: v => catOf(v).label },
+  { key: 'date',     label: 'Date' },
+  { key: 'time',     label: 'Time' },
+  { key: 'links',    label: 'Links', format: v => (Array.isArray(v) ? v.filter(Boolean).join(', ') : (v || '')) },
+]
+
 function ideaLinks(idea) {
   if (Array.isArray(idea.links)) return idea.links.filter(Boolean)
   if (idea.url) return [idea.url]
   return []
 }
 
-// Short label for a link chip — the bare hostname, or "Link" if it won't parse.
 function linkLabel(url) {
   try { return new URL(url).hostname.replace(/^www\./, '') } catch { return 'Link' }
 }
 
-export default function BrainstormTab({ tripId, trip = {}, days = [], members = [], currentUser, readOnly = false }) {
+export default function IdeasTab({
+  tripId, trip = {}, days = [], members = [], currentUser,
+  readOnly = false, onPollsChanged,
+}) {
+  // Ideas
   const [ideas, setIdeas]         = useState([])
   const [comments, setComments]   = useState({})   // ideaId -> [comment]
   const [showForm, setShowForm]   = useState(false)
@@ -52,14 +62,21 @@ export default function BrainstormTab({ tripId, trip = {}, days = [], members = 
   const [openThread, setOpenThread] = useState(null)
   const [editingId, setEditingId] = useState(null)
   const [editForm, setEditForm]   = useState(BLANK)
-  const [schedulingId, setSchedulingId] = useState(null)  // idea being added to the trip
-  const [addedId, setAddedId]     = useState(null)         // idea just added — for a brief confirmation
+  const [schedulingId, setSchedulingId] = useState(null)
+  const [addedId, setAddedId]     = useState(null)
+
+  // Polls
+  const [polls, setPolls]         = useState([])
+  const [votes, setVotes]         = useState([])
+  const [expandedPoll, setExpandedPoll] = useState(null)
+  const [showPollForm, setShowPollForm] = useState(false)
 
   const nameOf = id =>
     members.find(m => m.id === id)?.full_name?.split(' ')[0] || 'Someone'
 
-  useEffect(() => { load() }, [tripId])
+  useEffect(() => { load(); loadPolls() }, [tripId])
 
+  // ── Ideas data ────────────────────────────────────────────────────────────
   async function load() {
     const [ideaSnap, commentSnap] = await Promise.all([
       getDocs(query(collection(db, 'brainstorm_ideas'),    where('trip_id', '==', tripId))),
@@ -82,18 +99,25 @@ export default function BrainstormTab({ tripId, trip = {}, days = [], members = 
   async function addIdea() {
     if (!form.title.trim()) return
     setSaving(true)
-    await addDoc(collection(db, 'brainstorm_ideas'), {
+    const payload = {
       trip_id: tripId,
       title: form.title.trim(),
       note: form.note.trim(),
       links: form.links.map(l => l.trim()).filter(Boolean),
-      url: '',   // superseded by links[]; cleared so legacy readers don't double up
+      url: '',
       category: form.category,
       date: form.date || '',
       time: form.time || '',
       created_by: currentUser.id,
-      liked_by: [currentUser.id],   // proposing an idea counts as a vote for it
+      liked_by: [currentUser.id],
       created_at: serverTimestamp(),
+    }
+    const ref = await addDoc(collection(db, 'brainstorm_ideas'), payload)
+    await logActivity(tripId, currentUser, {
+      action: 'create', entity: 'idea',
+      summary: `Floated the idea “${payload.title}”`,
+      details: fieldSummaryLines(payload, IDEA_FIELDS),
+      undo: { ops: [{ op: 'delete', collection: 'brainstorm_ideas', docId: ref.id }] },
     })
     setForm(BLANK); setShowForm(false); setSaving(false); load()
   }
@@ -116,23 +140,33 @@ export default function BrainstormTab({ tripId, trip = {}, days = [], members = 
 
   async function saveEdit() {
     if (!editForm.title.trim()) return
+    const before = ideas.find(i => i.id === editingId)
     setSaving(true)
-    await updateDoc(doc(db, 'brainstorm_ideas', editingId), {
+    const after = {
       title: editForm.title.trim(),
       note: editForm.note.trim(),
       links: editForm.links.map(l => l.trim()).filter(Boolean),
-      url: '',   // superseded by links[]
       category: editForm.category,
       date: editForm.date || '',
       time: editForm.time || '',
-      updated_at: serverTimestamp(),
+    }
+    await updateDoc(doc(db, 'brainstorm_ideas', editingId), {
+      ...after, url: '', updated_at: serverTimestamp(),
     })
+    const { lines, prev } = fieldDiff(before, after, IDEA_FIELDS)
+    if (lines.length) {
+      await logActivity(tripId, currentUser, {
+        action: 'update', entity: 'idea',
+        summary: `Edited the idea “${after.title}”`,
+        details: lines,
+        undo: { ops: [{ op: 'update', collection: 'brainstorm_ideas', docId: editingId, data: prev }] },
+      })
+    }
     setEditingId(null); setSaving(false); load()
   }
 
   async function toggleLike(idea) {
     const mine = idea.liked_by?.includes(currentUser.id)
-    // optimistic
     setIdeas(prev => prev.map(i => i.id !== idea.id ? i : {
       ...i,
       liked_by: mine
@@ -145,17 +179,35 @@ export default function BrainstormTab({ tripId, trip = {}, days = [], members = 
   }
 
   async function deleteIdea(id) {
+    const before = ideas.find(i => i.id === id)
+    const thread = comments[id] || []
     await deleteDoc(doc(db, 'brainstorm_ideas', id))
-    await Promise.all(
-      (comments[id] || []).map(c => deleteDoc(doc(db, 'brainstorm_comments', c.id)))
-    )
+    await Promise.all(thread.map(c => deleteDoc(doc(db, 'brainstorm_comments', c.id))))
+    // Undo restores the idea and every comment that hung off it.
+    const ops = []
+    if (before) {
+      const { id: _i, ...ideaData } = before
+      ops.push({ op: 'set', collection: 'brainstorm_ideas', docId: id, data: ideaData })
+    }
+    thread.forEach(c => {
+      const { id: cid, ...cData } = c
+      ops.push({ op: 'set', collection: 'brainstorm_comments', docId: cid, data: cData })
+    })
+    await logActivity(tripId, currentUser, {
+      action: 'delete', entity: 'idea',
+      summary: `Deleted the idea “${before?.title || 'idea'}”`,
+      details: [
+        ...fieldSummaryLines(before, IDEA_FIELDS),
+        ...(thread.length ? [`${thread.length} comment${thread.length !== 1 ? 's' : ''} removed`] : []),
+      ],
+      undo: ops.length ? { ops } : null,
+    })
     load()
   }
 
-  // Drop an idea into the itinerary as a scheduled event on the chosen day.
   async function addToTrip(idea, date, time) {
     const notesParts = [idea.note, ...ideaLinks(idea)].filter(Boolean)
-    await addDoc(collection(db, 'itinerary_events'), {
+    const payload = {
       trip_id: tripId,
       date,
       title: idea.title,
@@ -168,6 +220,13 @@ export default function BrainstormTab({ tripId, trip = {}, days = [], members = 
       timezone: trip.timezone || null,
       created_by: currentUser.id,
       created_at: serverTimestamp(),
+    }
+    const ref = await addDoc(collection(db, 'itinerary_events'), payload)
+    await logActivity(tripId, currentUser, {
+      action: 'create', entity: 'event',
+      summary: `Added “${idea.title}” to the itinerary`,
+      details: [`Day: ${date}`, ...(time ? [`Time: ${time}`] : []), 'From an idea'],
+      undo: { ops: [{ op: 'delete', collection: 'itinerary_events', docId: ref.id }] },
     })
     setSchedulingId(null)
     setAddedId(idea.id)
@@ -187,14 +246,117 @@ export default function BrainstormTab({ tripId, trip = {}, days = [], members = 
     await deleteDoc(doc(db, 'brainstorm_comments', id)); load()
   }
 
+  // ── Polls data ────────────────────────────────────────────────────────────
+  async function loadPolls() {
+    const [pollSnap, voteSnap] = await Promise.all([
+      getDocs(query(collection(db, 'polls'), where('trip_id', '==', tripId))),
+      getDocs(query(collection(db, 'poll_votes'), where('trip_id', '==', tripId))),
+    ])
+    const pollList = pollSnap.docs.map(d => ({ id: d.id, ...d.data() }))
+    const withOptions = await Promise.all(pollList.map(async poll => {
+      const optSnap = await getDocs(query(collection(db, 'poll_options'), where('poll_id', '==', poll.id)))
+      return { ...poll, poll_options: optSnap.docs.map(d => ({ id: d.id, ...d.data() })) }
+    }))
+    withOptions.sort((a, b) => (b.created_at?.seconds || 0) - (a.created_at?.seconds || 0))
+    setPolls(withOptions)
+    setVotes(voteSnap.docs.map(d => ({ id: d.id, ...d.data() })))
+  }
+
+  // Create a poll out of chosen ideas (and/or free-text options).
+  async function createPoll({ question, options, day }) {
+    setSaving(true)
+    const pollRef = await addDoc(collection(db, 'polls'), {
+      trip_id: tripId,
+      question: question.trim(),
+      day: day || '',
+      created_by: currentUser.id,
+      created_at: serverTimestamp(),
+    })
+    const optRefs = await Promise.all(options.map(o =>
+      addDoc(collection(db, 'poll_options'), {
+        poll_id: pollRef.id,
+        text: o.text,
+        ...(o.idea_id ? { idea_id: o.idea_id } : {}),
+      })
+    ))
+    await logActivity(tripId, currentUser, {
+      action: 'create', entity: 'poll',
+      summary: `Started the poll “${question.trim()}”`,
+      details: [
+        ...(day ? [`Day: ${day}`] : []),
+        `Options: ${options.map(o => o.text).join(', ')}`,
+      ],
+      undo: {
+        ops: [
+          { op: 'delete', collection: 'polls', docId: pollRef.id },
+          ...optRefs.map(r => ({ op: 'delete', collection: 'poll_options', docId: r.id })),
+        ],
+      },
+    })
+    setShowPollForm(false); setSaving(false)
+    loadPolls(); onPollsChanged?.()
+  }
+
+  async function vote(pollId, optionId) {
+    const existing = votes.filter(v => v.poll_id === pollId && v.user_id === currentUser.id)
+    await Promise.all(existing.map(v => deleteDoc(doc(db, 'poll_votes', v.id))))
+    await addDoc(collection(db, 'poll_votes'), {
+      poll_id: pollId, option_id: optionId, user_id: currentUser.id,
+      trip_id: tripId, created_at: serverTimestamp(),
+    })
+    loadPolls(); onPollsChanged?.()
+  }
+
+  async function deletePoll(poll) {
+    const pollVotes = votes.filter(v => v.poll_id === poll.id)
+    const options = poll.poll_options || []
+    await Promise.all([
+      ...pollVotes.map(v => deleteDoc(doc(db, 'poll_votes', v.id))),
+      ...options.map(o => deleteDoc(doc(db, 'poll_options', o.id))),
+    ])
+    await deleteDoc(doc(db, 'polls', poll.id))
+    // Undo re-creates the poll, its options and everyone's votes.
+    const ops = [
+      { op: 'set', collection: 'polls', docId: poll.id, data: {
+        trip_id: poll.trip_id, question: poll.question, day: poll.day || '',
+        created_by: poll.created_by, created_at: poll.created_at,
+      } },
+      ...options.map(o => ({ op: 'set', collection: 'poll_options', docId: o.id, data: {
+        poll_id: o.poll_id, text: o.text, ...(o.idea_id ? { idea_id: o.idea_id } : {}),
+      } })),
+      ...pollVotes.map(v => ({ op: 'set', collection: 'poll_votes', docId: v.id, data: {
+        poll_id: v.poll_id, option_id: v.option_id, user_id: v.user_id,
+        trip_id: v.trip_id, created_at: v.created_at,
+      } })),
+    ]
+    await logActivity(tripId, currentUser, {
+      action: 'delete', entity: 'poll',
+      summary: `Deleted the poll “${poll.question}”`,
+      details: [
+        `Options: ${options.map(o => o.text).join(', ')}`,
+        ...(pollVotes.length ? [`${pollVotes.length} vote${pollVotes.length !== 1 ? 's' : ''} removed`] : []),
+      ],
+      undo: { ops },
+    })
+    loadPolls(); onPollsChanged?.()
+  }
+
   return (
     <div className="px-6 pt-4 space-y-4">
+      {/* ── Action buttons ── */}
       {!readOnly && (
-        <button onClick={() => { setShowForm(!showForm); setEditingId(null) }}
-          className="w-full flex items-center justify-center gap-2 py-3 rounded-2xl text-sm"
-          style={{ background: 'rgba(212,184,122,0.08)', border: '1px dashed rgba(212,184,122,0.25)', color: '#d4b87a' }}>
-          <Plus size={14} />Float an Idea
-        </button>
+        <div className="flex gap-2">
+          <button onClick={() => { setShowForm(v => !v); setEditingId(null); setShowPollForm(false) }}
+            className="flex-1 flex items-center justify-center gap-2 py-3 rounded-2xl text-sm"
+            style={{ background: 'rgba(212,184,122,0.08)', border: '1px dashed rgba(212,184,122,0.25)', color: '#d4b87a' }}>
+            <Plus size={14} />Float an Idea
+          </button>
+          <button onClick={() => { setShowPollForm(v => !v); setShowForm(false); setEditingId(null) }}
+            className="flex-1 flex items-center justify-center gap-2 py-3 rounded-2xl text-sm"
+            style={{ background: 'rgba(122,154,181,0.08)', border: '1px dashed rgba(122,154,181,0.3)', color: '#7a9ab5' }}>
+            <span>🗳️</span>Create a Poll
+          </button>
+        </div>
       )}
 
       {showForm && !readOnly && (
@@ -205,12 +367,41 @@ export default function BrainstormTab({ tripId, trip = {}, days = [], members = 
         />
       )}
 
+      {showPollForm && !readOnly && (
+        <PollForm
+          ideas={ideas} trip={trip} days={days} saving={saving}
+          onSave={createPoll}
+          onCancel={() => setShowPollForm(false)}
+        />
+      )}
+
+      {/* ── Active polls ── */}
+      {polls.length > 0 && (
+        <div className="space-y-3">
+          <p className="text-xs tracking-widest uppercase pt-1" style={{ color: '#5a5248' }}>Polls · Decide</p>
+          {polls.map(poll => (
+            <PollCard
+              key={poll.id} poll={poll} votes={votes} currentUser={currentUser}
+              expanded={expandedPoll === poll.id} readOnly={readOnly}
+              onToggle={() => setExpandedPoll(expandedPoll === poll.id ? null : poll.id)}
+              onVote={optId => vote(poll.id, optId)}
+              onDelete={() => deletePoll(poll)}
+            />
+          ))}
+        </div>
+      )}
+
+      {/* ── Idea board ── */}
+      {(ideas.length > 0 || polls.length > 0) && (
+        <p className="text-xs tracking-widest uppercase pt-2" style={{ color: '#5a5248' }}>Ideas · Brainstorm</p>
+      )}
+
       {ideas.length === 0 && !showForm && (
         <div className="text-center py-16 fade-in">
           <div className="text-5xl mb-4">💭</div>
           <p className="font-display text-xl font-light" style={{ color: '#e8d5a3' }}>No ideas yet</p>
           <p className="text-sm mt-2" style={{ color: '#5a5248' }}>
-            Toss out places, activities, or anything you're dreaming up — the group upvotes the best.
+            Toss out places, activities, or anything you're dreaming up — upvote the best, then bundle them into a poll to decide.
           </p>
         </div>
       )}
@@ -240,7 +431,6 @@ export default function BrainstormTab({ tripId, trip = {}, days = [], members = 
           return (
             <div key={idea.id} className="glass rounded-2xl p-5 fade-in">
               <div className="flex items-start gap-4">
-                {/* Vote pill */}
                 <button onClick={() => toggleLike(idea)} disabled={readOnly}
                   className="flex flex-col items-center justify-center rounded-xl px-3 py-2 flex-shrink-0 transition-all active:scale-95"
                   style={{
@@ -342,11 +532,188 @@ export default function BrainstormTab({ tripId, trip = {}, days = [], members = 
   )
 }
 
-// Compact "Jun 14 · 4:00 PM" label for an idea's proposed slot.
+// ── Poll card ──────────────────────────────────────────────────────────────────
+function PollCard({ poll, votes, currentUser, expanded, readOnly, onToggle, onVote, onDelete }) {
+  const pollVotes = votes.filter(v => v.poll_id === poll.id)
+  const myVote    = pollVotes.find(v => v.user_id === currentUser.id)
+  const total     = pollVotes.length
+  const canDelete = poll.created_by === currentUser.id && !readOnly
+  const dayLabel  = poll.day ? formatWhen(poll.day, '') : ''
+
+  return (
+    <div className="glass rounded-2xl overflow-hidden fade-in"
+      style={{ border: '1px solid rgba(122,154,181,0.18)' }}>
+      <div className="w-full px-5 py-4 flex items-start justify-between gap-3">
+        <button onClick={onToggle} className="flex-1 text-left min-w-0">
+          <div className="flex items-center gap-2 flex-wrap">
+            <span className="text-xs px-2 py-0.5 rounded-full" style={{ background: 'rgba(122,154,181,0.15)', color: '#7a9ab5' }}>🗳️ Poll</span>
+            {dayLabel && (
+              <span className="flex items-center gap-1 text-xs px-2 py-0.5 rounded-full"
+                style={{ background: 'rgba(122,154,181,0.12)', color: '#7a9ab5' }}>
+                <CalendarPlus size={10} />{dayLabel}
+              </span>
+            )}
+          </div>
+          <p className="font-display text-lg font-light leading-tight mt-1.5" style={{ color: '#e8d5a3' }}>{poll.question}</p>
+          <p className="text-xs mt-1" style={{ color: '#5a5248' }}>{total} vote{total !== 1 ? 's' : ''}{myVote ? ' · voted' : ' · tap to vote'}</p>
+        </button>
+        <div className="flex items-center gap-2 flex-shrink-0">
+          {canDelete && (
+            <button onClick={onDelete} style={{ color: '#c47c5a' }} title="Delete poll"><Trash2 size={13} /></button>
+          )}
+          <button onClick={onToggle} style={{ color: '#5a5248' }}>
+            {expanded ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
+          </button>
+        </div>
+      </div>
+      {expanded && (
+        <div className="px-5 pb-5 space-y-2 slide-up">
+          {poll.poll_options?.map(option => {
+            const optVotes  = pollVotes.filter(v => v.option_id === option.id).length
+            const pct       = total ? Math.round((optVotes / total) * 100) : 0
+            const isMyVote  = myVote?.option_id === option.id
+            return (
+              <button key={option.id} onClick={() => !readOnly && onVote(option.id)} disabled={readOnly}
+                className="w-full text-left rounded-xl p-3 transition-all active:scale-98 relative overflow-hidden"
+                style={{ background: isMyVote ? 'rgba(212,184,122,0.12)' : 'rgba(255,255,255,0.03)', border: isMyVote ? '1px solid rgba(212,184,122,0.3)' : '1px solid rgba(255,255,255,0.05)' }}>
+                <div className="absolute inset-y-0 left-0 rounded-xl transition-all duration-500" style={{ width: `${pct}%`, background: 'rgba(212,184,122,0.06)' }} />
+                <div className="relative flex items-center justify-between">
+                  <div className="flex items-center gap-2">
+                    {isMyVote && <Check size={12} style={{ color: '#d4b87a' }} />}
+                    {option.idea_id && <span title="From an idea" style={{ fontSize: 11 }}>💡</span>}
+                    <span className="text-sm" style={{ color: isMyVote ? '#d4b87a' : '#d4cfc8' }}>{option.text}</span>
+                  </div>
+                  <div className="text-right">
+                    <span className="text-sm font-medium" style={{ color: isMyVote ? '#d4b87a' : '#5a5248' }}>{pct}%</span>
+                    <span className="text-xs ml-1" style={{ color: '#5a5248' }}>({optVotes})</span>
+                  </div>
+                </div>
+              </button>
+            )
+          })}
+        </div>
+      )}
+    </div>
+  )
+}
+
+// ── Poll builder — bundle ideas (and/or free text) into a poll ──────────────────
+function PollForm({ ideas, trip, days, saving, onSave, onCancel }) {
+  const [question, setQuestion] = useState('')
+  const [picked, setPicked]     = useState(new Set())   // idea ids chosen as options
+  const [extras, setExtras]     = useState([''])        // free-text options
+  const [day, setDay]           = useState('')
+
+  const toggle = id => setPicked(prev => {
+    const n = new Set(prev); n.has(id) ? n.delete(id) : n.add(id); return n
+  })
+
+  const options = [
+    ...ideas.filter(i => picked.has(i.id)).map(i => ({ text: i.title, idea_id: i.id })),
+    ...extras.map(t => t.trim()).filter(Boolean).map(t => ({ text: t })),
+  ]
+  const canCreate = question.trim() && options.length >= 2
+
+  return (
+    <div className="glass rounded-2xl p-5 space-y-4 slide-up" style={{ border: '1px solid rgba(122,154,181,0.25)' }}>
+      <div className="flex items-center justify-between">
+        <h3 className="font-display text-lg font-light" style={{ color: '#7a9ab5' }}>Create a poll</h3>
+        <button onClick={onCancel} style={{ color: '#5a5248' }}><X size={14} /></button>
+      </div>
+
+      <div>
+        <p className="text-xs tracking-widest uppercase mb-2" style={{ color: '#5a5248' }}>Question</p>
+        <input autoFocus value={question} onChange={e => setQuestion(e.target.value)}
+          placeholder="What should we do on Saturday?"
+          className="w-full bg-transparent text-sm outline-none"
+          style={{ color: '#d4cfc8', borderBottom: '1px solid rgba(122,154,181,0.2)', paddingBottom: '8px' }} />
+      </div>
+
+      {(trip.start_date || days.length > 0) && (
+        <div>
+          <p className="text-xs tracking-widest uppercase mb-2" style={{ color: '#5a5248' }}>Day (optional)</p>
+          <input type="date" value={day} onChange={e => setDay(e.target.value)}
+            min={trip.start_date || undefined} max={trip.end_date || undefined}
+            className="w-full bg-transparent text-sm outline-none"
+            style={{ color: '#d4cfc8', borderBottom: '1px solid rgba(255,255,255,0.08)', paddingBottom: '8px', colorScheme: 'dark' }} />
+        </div>
+      )}
+
+      <div>
+        <p className="text-xs tracking-widest uppercase mb-2" style={{ color: '#5a5248' }}>
+          Options from ideas
+        </p>
+        {ideas.length === 0 ? (
+          <p className="text-xs" style={{ color: '#3d3830' }}>No ideas yet — add free-text options below.</p>
+        ) : (
+          <div className="flex flex-col gap-1.5">
+            {ideas.map(idea => {
+              const on = picked.has(idea.id)
+              return (
+                <button key={idea.id} type="button" onClick={() => toggle(idea.id)}
+                  className="flex items-center gap-2 px-3 py-2 rounded-xl text-left transition-all"
+                  style={{
+                    background: on ? 'rgba(212,184,122,0.12)' : 'rgba(255,255,255,0.03)',
+                    border: `1px solid ${on ? 'rgba(212,184,122,0.3)' : 'rgba(255,255,255,0.05)'}`,
+                  }}>
+                  <span className="w-4 h-4 rounded flex items-center justify-center flex-shrink-0"
+                    style={{ background: on ? 'linear-gradient(135deg, #d4b87a 0%, #c19a4e 100%)' : 'rgba(255,255,255,0.06)' }}>
+                    {on && <Check size={10} color="#0a0908" strokeWidth={3} />}
+                  </span>
+                  <span className="text-xs flex-1 min-w-0 truncate" style={{ color: on ? '#d4b87a' : '#d4cfc8' }}>
+                    {catOf(idea.category).emoji} {idea.title}
+                  </span>
+                </button>
+              )
+            })}
+          </div>
+        )}
+      </div>
+
+      <div>
+        <p className="text-xs tracking-widest uppercase mb-2" style={{ color: '#5a5248' }}>Other options</p>
+        <div className="space-y-2">
+          {extras.map((opt, i) => (
+            <div key={i} className="flex items-center gap-2">
+              <span className="text-xs" style={{ color: '#5a5248' }}>+</span>
+              <input value={opt}
+                onChange={e => setExtras(extras.map((o, idx) => idx === i ? e.target.value : o))}
+                placeholder="Add another option"
+                className="flex-1 bg-transparent text-sm outline-none"
+                style={{ color: '#d4cfc8', borderBottom: '1px solid rgba(255,255,255,0.08)', paddingBottom: '6px' }} />
+              {extras.length > 1 && (
+                <button type="button" onClick={() => setExtras(extras.filter((_, idx) => idx !== i))}
+                  style={{ color: '#c47c5a' }}><X size={13} /></button>
+              )}
+            </div>
+          ))}
+        </div>
+        <button type="button" onClick={() => setExtras([...extras, ''])}
+          className="flex items-center gap-1.5 text-xs mt-2" style={{ color: '#7a9ab5' }}>
+          <Plus size={11} />Add option
+        </button>
+      </div>
+
+      <div className="flex gap-2">
+        <button onClick={() => onSave({ question, options, day })} disabled={saving || !canCreate}
+          className="flex-1 py-2 rounded-xl text-xs font-medium flex items-center justify-center gap-1.5"
+          style={{ background: canCreate ? 'linear-gradient(135deg, #d4b87a 0%, #c19a4e 100%)' : '#3d3830', color: canCreate ? '#0a0908' : '#5a5248' }}>
+          {saving ? 'Creating…' : <><Check size={12} />Create poll ({options.length})</>}
+        </button>
+        <button onClick={onCancel} className="px-4 py-2 rounded-xl text-xs"
+          style={{ color: '#5a5248', background: 'rgba(255,255,255,0.04)' }}>Cancel</button>
+      </div>
+      {!canCreate && (
+        <p className="text-xs" style={{ color: '#3d3830' }}>Pick a question and at least 2 options.</p>
+      )}
+    </div>
+  )
+}
+
 function formatWhen(date, time) {
   if (!date) return ''
   let label = date
-  try { label = format(new Date(date + 'T12:00:00'), 'MMM d') } catch { /* keep raw */ }
+  try { label = format(new Date(date + 'T12:00:00'), 'EEE, MMM d') } catch { /* keep raw */ }
   if (!time) return label
   const [h, m] = time.split(':').map(Number)
   if (Number.isNaN(h)) return label
@@ -355,8 +722,6 @@ function formatWhen(date, time) {
   return `${label} · ${h12}:${String(m).padStart(2, '0')} ${ampm}`
 }
 
-// Inline row for scheduling an idea into the itinerary. Defaults to the idea's
-// own date/time when it has them, and bounds the picker to the trip's dates.
 function AddToTripRow({ idea, trip, days, onAdd, onCancel }) {
   const fallback = days[0] ? format(days[0], 'yyyy-MM-dd') : ''
   const [date, setDate] = useState(idea.date || fallback)
@@ -367,7 +732,6 @@ function AddToTripRow({ idea, trip, days, onAdd, onCancel }) {
     if (!date || busy) return
     setBusy(true)
     await onAdd(date, time)
-    // parent unmounts this row on success; no need to reset busy
   }
 
   return (
@@ -466,7 +830,6 @@ function IdeaForm({ form, setForm, saving, trip = {}, mode = 'add', onSave, onCa
         </div>
       </div>
 
-      {/* Idea title */}
       <div>
         <p className="text-xs tracking-widest uppercase mb-2" style={{ color: '#5a5248' }}>Idea *</p>
         <input type="text" value={form.title} onChange={e => setForm({ ...form, title: e.target.value })}
@@ -474,7 +837,6 @@ function IdeaForm({ form, setForm, saving, trip = {}, mode = 'add', onSave, onCa
           style={{ color: '#d4cfc8', borderBottom: '1px solid rgba(255,255,255,0.08)', paddingBottom: '8px' }} />
       </div>
 
-      {/* Optional date + time */}
       <div className="grid grid-cols-2 gap-3">
         <div>
           <p className="text-xs tracking-widest uppercase mb-2" style={{ color: '#5a5248' }}>Date</p>
@@ -491,7 +853,6 @@ function IdeaForm({ form, setForm, saving, trip = {}, mode = 'add', onSave, onCa
         </div>
       </div>
 
-      {/* Multiline note */}
       <div>
         <p className="text-xs tracking-widest uppercase mb-2" style={{ color: '#5a5248' }}>Note</p>
         <textarea value={form.note} onChange={e => setForm({ ...form, note: e.target.value })}
@@ -500,7 +861,6 @@ function IdeaForm({ form, setForm, saving, trip = {}, mode = 'add', onSave, onCa
           style={{ color: '#d4cfc8', borderBottom: '1px solid rgba(255,255,255,0.08)', paddingBottom: '8px' }} />
       </div>
 
-      {/* Links (one or more) */}
       <div>
         <p className="text-xs tracking-widest uppercase mb-2" style={{ color: '#5a5248' }}>Links</p>
         <div className="space-y-2">

@@ -12,6 +12,14 @@
  */
 export const WHATS_NEW = [
   {
+    version: '2026.07.27',
+    date: 'July 2026',
+    items: [
+      '💡 Ideas and Polls are now one tab. Float ideas, then bundle your favourites straight into a poll (“A, B or C on Saturday?”) so the group can vote.',
+      '🕰️ Every trip now has a History tab — see what changed, who changed it and when, with one-tap Undo for edits to the itinerary, ideas, polls and trip details.',
+    ],
+  },
+  {
     version: '2026.07.26',
     date: 'July 2026',
     items: [

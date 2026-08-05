@@ -747,12 +747,14 @@ exports.nextSharedTrip = functions.https.onRequest(async (req, res) => {
     const sharedTripIds = [...tripSets[0]].filter(id => tripSets.every(set => set.has(id)))
     if (!sharedTripIds.length) return res.json({ trip: null })
 
-    // 3) Load shared trips, keep upcoming ones (start_date is 'YYYY-MM-DD'),
-    //    pick the soonest.
+    // 3) Load shared trips, keep upcoming AND in-progress ones (dates are
+    //    'YYYY-MM-DD', so a trip is still relevant while end_date >= today),
+    //    pick the soonest by start_date — an in-progress trip's start_date is
+    //    always earlier than any future trip's, so this naturally prefers it.
     const today = new Date().toISOString().slice(0, 10)
     const trips = await Promise.all(sharedTripIds.map(id => db.collection('trips').doc(id).get()))
     const upcoming = trips
-      .filter(doc => doc.exists && doc.data().start_date && doc.data().start_date >= today)
+      .filter(doc => doc.exists && doc.data().start_date && doc.data().end_date && doc.data().end_date >= today)
       .map(doc => ({ id: doc.id, ...doc.data() }))
       .sort((a, b) => a.start_date.localeCompare(b.start_date))
 
@@ -763,6 +765,7 @@ exports.nextSharedTrip = functions.https.onRequest(async (req, res) => {
           name:       soonest.name,
           start_date: soonest.start_date,
           end_date:   soonest.end_date ?? null,
+          is_current: soonest.start_date <= today && today <= soonest.end_date,
           url:        `${WANDER_APP_URL}/trips/${soonest.id}`,
         }
       : null

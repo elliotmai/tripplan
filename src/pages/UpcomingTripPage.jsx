@@ -55,13 +55,15 @@ export default function UpcomingTripPage() {
       const shared = [...sets[0]].filter(id => sets.every(s => s.has(id)))
       if (!shared.length) return setStatus('none')
 
-      // Load shared trips, keep upcoming, pick the soonest.
+      // Load shared trips, keep the ones that haven't ended, pick the soonest —
+      // so a trip already underway wins over the next one after it. An open-ended
+      // trip never counts as past, same rule TripsPage uses.
       const today = new Date().toISOString().slice(0, 10)
       const trips = []
       for (const id of shared) {
         const s = await getDoc(doc(db, 'trips', id))
         const t = s.exists() ? s.data() : null
-        if (t?.start_date && t.start_date >= today) trips.push({ id, start_date: t.start_date })
+        if (t?.start_date && (!t.end_date || t.end_date >= today)) trips.push({ id, start_date: t.start_date })
       }
       if (!trips.length) return setStatus('none')
 

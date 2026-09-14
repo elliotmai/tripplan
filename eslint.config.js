@@ -26,4 +26,16 @@ export default defineConfig([
       'no-unused-vars': ['error', { varsIgnorePattern: '^[A-Z_]' }],
     },
   },
+  {
+    // Cloud Functions are CommonJS running on Node, not ES modules in a
+    // browser. Linted as the latter, every `exports.foo = …` in
+    // functions/index.js reads as an undefined global — five errors that were
+    // never bugs, sitting in the output where a real one would have to be
+    // noticed. `require` and `process` are the same story.
+    files: ['functions/**/*.js'],
+    languageOptions: {
+      globals: globals.node,
+      parserOptions: { sourceType: 'commonjs' },
+    },
+  },
 ])

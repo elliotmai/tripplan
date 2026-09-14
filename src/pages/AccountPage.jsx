@@ -10,6 +10,7 @@ import {
   AlertTriangle, X,
 } from 'lucide-react'
 import BottomNav from '../components/BottomNav'
+import ConnectedApps from '../components/ConnectedApps'
 
 // ─── stat card ────────────────────────────────────────────────────────────────
 function StatCard({ icon, value, label, small }) {
@@ -474,6 +475,10 @@ export default function AccountPage() {
         </Section>
 
         {/* Account actions */}
+        <Section title="Connected Apps">
+          <ConnectedApps userId={user?.uid} />
+        </Section>
+
         <Section title="Account">
           <button
             onClick={signOut}

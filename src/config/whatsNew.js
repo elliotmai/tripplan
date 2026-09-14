@@ -12,6 +12,13 @@
  */
 export const WHATS_NEW = [
   {
+    version: '2026.09.14',
+    date: 'September 2026',
+    items: [
+      '🔌 Account → Connected Apps lets you give another app read-only access to your trips — the dates, and the flights on them. Nothing can be changed with it, and you can disconnect any app at any time. First up: a farm housesitter board that now shows when you are back without anyone retyping a flight time into two apps.',
+    ],
+  },
+  {
     version: '2026.07.27',
     date: 'July 2026',
     items: [

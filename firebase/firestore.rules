@@ -128,6 +128,21 @@ service cloud.firestore {
                           && request.resource.data.created_by == request.auth.uid;
     }
 
+    // APP TOKENS
+    // A token the owner mints for another app in Account → Connected apps, and
+    // revokes there. Same owner-only shape as calendar tokens above, with no
+    // update: the only things worth changing are the label and `last_used_at`,
+    // and `last_used_at` is written by the Cloud Function through the Admin
+    // SDK, which bypasses these rules. A client that could update the doc
+    // could also rewrite `created_by` and point somebody else's live token at
+    // its own account — so it cannot. Relabelling is revoke and re-mint.
+    match /app_tokens/{token} {
+      allow read, delete: if request.auth != null
+                          && resource.data.created_by == request.auth.uid;
+      allow create:       if request.auth != null
+                          && request.resource.data.created_by == request.auth.uid;
+    }
+
     // FRIENDSHIPS
     // Doc id = sorted [uidA, uidB].join('_'); users[] holds both uids.
     // Each client may only write a friendship that contains itself.

@@ -777,3 +777,204 @@ exports.nextSharedTrip = functions.https.onRequest(async (req, res) => {
     return res.status(500).json({ error: 'internal' })
   }
 })
+
+// ─── Connected apps: read-only trip access for another app ───────────────────
+//
+// `nextSharedTrip` above already established that another app may read from
+// Wander — but it is deliberately unauthenticated and deliberately thin: it
+// hands over a trip's name and dates to anyone who knows two members' emails,
+// which is fine for "are these two away together" and nowhere near fine for an
+// itinerary. Flight numbers, times and who is on board are not something to
+// give up on a guessable URL.
+//
+// So these two endpoints take a token the owner mints for a named app in
+// Account → Connected apps, and can revoke there. The pattern is
+// `calendar_tokens`, with one important difference: a calendar token *is* a
+// trip — its doc names the one trip it feeds, so possession is the whole
+// check. An app token spans every trip its owner is on, so possession only
+// establishes *who* is asking, and membership has to be checked per request.
+// `assertTripMembership` below is that check, and it is the reason a stolen
+// token still cannot read a trip its owner was never on.
+
+const APP_TOKEN_COLLECTION = 'app_tokens'
+
+function corsPreflight(req, res) {
+  res.set('Access-Control-Allow-Origin', '*')
+  if (req.method !== 'OPTIONS') return false
+  res.set('Access-Control-Allow-Methods', 'GET')
+  res.set('Access-Control-Allow-Headers', 'Content-Type')
+  res.set('Access-Control-Max-Age', '3600')
+  res.status(204).send('')
+  return true
+}
+
+// Resolves a token to its owner, or sends the error and returns null.
+// Accepts `Authorization: Bearer …` as well as `?token=`: a query string ends
+// up in server logs and browser history, and a server-to-server caller has no
+// reason to use one.
+async function ownerForAppToken(req, res) {
+  const header = String(req.get('authorization') || '')
+  const bearer = header.startsWith('Bearer ') ? header.slice(7).trim() : ''
+  const token = bearer || String(req.query.token || '')
+  if (!token) {
+    res.status(400).json({ error: 'missing_token' })
+    return null
+  }
+
+  const snap = await db.collection(APP_TOKEN_COLLECTION).doc(token).get()
+  // A doc with no `created_by` is treated exactly as one that is not there. It
+  // should be unreachable — the rules require the field on create — but the
+  // alternative to checking is passing `undefined` into a `where` clause,
+  // which throws: a malformed token doc would 500 rather than be denied.
+  if (!snap.exists || !snap.data().created_by) {
+    // Deliberately the same answer as a token that never existed: telling a
+    // caller which of the two it is confirms tokens for them.
+    res.status(403).json({ error: 'invalid_token' })
+    return null
+  }
+
+  // Best effort, and not awaited — "last used" is for the human reading the
+  // revoke list, and a failed write there must not fail the read.
+  snap.ref.update({ last_used_at: admin.firestore.FieldValue.serverTimestamp() }).catch(() => {})
+
+  return { token, uid: snap.data().created_by }
+}
+
+/** True when `uid` is on `tripId`. The check possession alone cannot make. */
+async function isTripMember(tripId, uid) {
+  const snap = await db
+    .collection('trip_members')
+    .where('trip_id', '==', tripId)
+    .where('user_id', '==', uid)
+    .limit(1)
+    .get()
+  return !snap.empty
+}
+
+// GET /appTrips           → { trips: [ … ] }, newest departure first.
+// The picker on the other side of the integration: enough to choose a trip by,
+// and nothing that would be a leak on its own.
+exports.appTrips = functions.https.onRequest(async (req, res) => {
+  if (corsPreflight(req, res)) return
+
+  try {
+    const owner = await ownerForAppToken(req, res)
+    if (!owner) return
+
+    const memberSnap = await db.collection('trip_members').where('user_id', '==', owner.uid).get()
+    const tripIds = [...new Set(memberSnap.docs.map(d => d.data().trip_id))]
+    if (!tripIds.length) return res.json({ trips: [] })
+
+    const today = new Date().toISOString().slice(0, 10)
+    const docs = await Promise.all(tripIds.map(id => db.collection('trips').doc(id).get()))
+
+    const trips = docs
+      .filter(doc => doc.exists)
+      .map(doc => ({ id: doc.id, ...doc.data() }))
+      // Dates are 'YYYY-MM-DD' strings, so they compare lexically.
+      .filter(trip => trip.end_date && trip.end_date >= today)
+      .sort((a, b) => String(a.start_date).localeCompare(String(b.start_date)))
+      .map(trip => ({
+        id: trip.id,
+        name: trip.name || '',
+        destination: trip.destination || null,
+        start_date: trip.start_date || null,
+        end_date: trip.end_date || null,
+        is_current: trip.start_date <= today && today <= trip.end_date,
+      }))
+
+    res.set('Cache-Control', 'private, max-age=60')
+    return res.json({ trips })
+  } catch (err) {
+    console.error('appTrips failed', err)
+    return res.status(500).json({ error: 'internal' })
+  }
+})
+
+// GET /appTripTravel?trip=ID → { trip, legs, accommodations }
+//
+// The legs come back as stored: a wall clock plus the IANA zone it is read in,
+// never an instant. That is what Wander holds, and converting here would be
+// this function guessing at an offset the record does not carry — see
+// `formatDTReadable`'s caveat. A consumer that wants an instant has the zone
+// to do it with.
+exports.appTripTravel = functions.https.onRequest(async (req, res) => {
+  if (corsPreflight(req, res)) return
+
+  try {
+    const owner = await ownerForAppToken(req, res)
+    if (!owner) return
+
+    const tripId = String(req.query.trip || '')
+    if (!tripId) return res.status(400).json({ error: 'missing_trip' })
+
+    // Membership before existence: answering "not found" for a trip that does
+    // exist but is somebody else's, and "forbidden" for one that does not,
+    // would let a caller map out trip ids by the difference.
+    if (!(await isTripMember(tripId, owner.uid))) {
+      return res.status(404).json({ error: 'not_found' })
+    }
+
+    const tripSnap = await db.collection('trips').doc(tripId).get()
+    if (!tripSnap.exists) return res.status(404).json({ error: 'not_found' })
+    const trip = { id: tripSnap.id, ...tripSnap.data() }
+
+    const [detailsSnap, legsSnap, accomsSnap, membersSnap] = await Promise.all([
+      db.collection('travel_details').where('trip_id', '==', tripId).get(),
+      db.collection('trip_legs').where('trip_id', '==', tripId).get(),
+      db.collection('trip_accommodations').where('trip_id', '==', tripId).get(),
+      db.collection('trip_members').where('trip_id', '==', tripId).get(),
+    ])
+
+    const profileIds = membersSnap.docs.map(d => d.data().user_id)
+    const profiles = await Promise.all(profileIds.map(uid => db.collection('profiles').doc(uid).get()))
+    const members = profiles.filter(s => s.exists).map(s => ({ id: s.id, ...s.data() }))
+
+    // Shared with the ICS builder on purpose: `travel_details.legs[]` is a
+    // shape still live in this database alongside `trip_legs`, and a second
+    // consumer reading only the newer one would silently lose older trips.
+    const { legs, accoms } = buildNormalizedTravel(
+      detailsSnap.docs.map(d => ({ id: d.id, ...d.data() })),
+      legsSnap.docs.map(d => ({ id: d.id, ...d.data() })),
+      accomsSnap.docs.map(d => ({ id: d.id, ...d.data() })),
+      members,
+    )
+
+    res.set('Cache-Control', 'private, max-age=60')
+    return res.json({
+      trip: {
+        id: trip.id,
+        name: trip.name || '',
+        destination: trip.destination || null,
+        start_date: trip.start_date || null,
+        end_date: trip.end_date || null,
+        timezone: trip.timezone || null,
+      },
+      legs: legs
+        .map(leg => ({
+          transport: leg.transport || 'other',
+          number: leg.number || null,
+          from: leg.from || '',
+          to: leg.to || '',
+          depart_at: leg.depart_at || null,
+          depart_tz: leg.depart_tz || null,
+          arrive_at: leg.arrive_at || null,
+          arrive_tz: leg.arrive_tz || null,
+          notes: leg.notes || null,
+          traveler_names: leg.traveler_names || [],
+        }))
+        .filter(leg => leg.depart_at)
+        .sort((a, b) => String(a.depart_at).localeCompare(String(b.depart_at))),
+      accommodations: accoms.map(accom => ({
+        name: accom.name || '',
+        address: accom.address || null,
+        check_in: accom.check_in || null,
+        check_out: accom.check_out || null,
+        traveler_names: accom.traveler_names || [],
+      })),
+    })
+  } catch (err) {
+    console.error('appTripTravel failed', err)
+    return res.status(500).json({ error: 'internal' })
+  }
+})

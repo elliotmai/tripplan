@@ -1,7 +1,12 @@
-const functions  = require('firebase-functions')
-const admin      = require('firebase-admin')
+// Explicit v1 import: these are 1st-gen functions, and since firebase-functions
+// v6 the bare import creates 2nd-gen ones instead. Switching generations means
+// deleting and recreating the functions under new URLs, which would break
+// existing calendar subscriptions and connected-app links.
+const functions  = require('firebase-functions/v1')
+const { initializeApp } = require('firebase-admin/app')
+const { getFirestore, FieldValue } = require('firebase-admin/firestore')
 
-admin.initializeApp()
+initializeApp()
 
 // ─── ICS helpers — timezone-aware ────────────────────────────────────────────
 
@@ -510,7 +515,7 @@ function filterEvents(events, filter, ownerId) {
 
 // ─── Cloud Function ───────────────────────────────────────────────────────────
 
-const db = admin.firestore()
+const db = getFirestore()
 
 exports.calendarFeed = functions.https.onRequest(async (req, res) => {
   res.set('Access-Control-Allow-Origin', '*')
@@ -835,7 +840,7 @@ async function ownerForAppToken(req, res) {
 
   // Best effort, and not awaited — "last used" is for the human reading the
   // revoke list, and a failed write there must not fail the read.
-  snap.ref.update({ last_used_at: admin.firestore.FieldValue.serverTimestamp() }).catch(() => {})
+  snap.ref.update({ last_used_at: FieldValue.serverTimestamp() }).catch(() => {})
 
   return { token, uid: snap.data().created_by }
 }

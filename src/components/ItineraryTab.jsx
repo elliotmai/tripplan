@@ -11,10 +11,13 @@ import { useAuth } from '../contexts/AuthContext'
 import { formatTemp, isHour12, formatClock } from '../lib/format'
 import { downloadICS, downloadCombinedICS } from '../lib/ical'
 import { normalizeLegs, normalizeAccommodations } from '../lib/travel'
-import { format } from 'date-fns'
+import {
+  format, startOfMonth, endOfMonth, startOfWeek, endOfWeek,
+  eachDayOfInterval, eachMonthOfInterval,
+} from 'date-fns'
 import {
   Plus, Clock, MapPin, Trash2, ChevronDown, ArrowRight,
-  Pencil, X, Check, CalendarDays, Users,
+  Pencil, X, Check, CalendarDays, Users, List,
 } from 'lucide-react'
 import TimezonePicker from './TimezonePicker'
 import { localTimezone } from '../lib/timezones'
@@ -734,11 +737,14 @@ function ExportModal({ events, members, allLegs, allAccoms, trip, scope, onClose
 export default function ItineraryTab({
   tripId, trip, days, members,
   travelDetails = [], sharedLegs = [], sharedAccoms = [],
-  currentUser,
+  currentUser, readOnly = false,
 }) {
   const [events, setEvents] = useState([])
   const [weather, setWeather] = useState([])
-  const [expandedDay, setExpandedDay] = useState(0)
+  // Days from today onwards start open and past days start closed; this holds
+  // the days the user has flipped from that default.
+  const [toggledDays, setToggledDays] = useState(() => new Set())
+  const [view, setView] = useState('list')   // 'list' | 'calendar'
   const [showAddForm, setShowAddForm] = useState(null)
   const [addForm, setAddForm] = useState({ ...BLANK_FORM, timezone: trip.timezone || '' })
   const [editingId, setEditingId] = useState(null)
@@ -773,6 +779,56 @@ export default function ItineraryTab({
   const travelByDate = buildTravelByDate(allLegs, hour12)
   const accomsByDate = buildAccomsByDate(allAccoms)
   const allMemberIds = members.map(m => m.id)
+  const todayStr = format(new Date(), 'yyyy-MM-dd')
+
+  const isDayOpen = dateStr => (dateStr >= todayStr) !== toggledDays.has(dateStr)
+
+  function toggleDay(dateStr) {
+    setToggledDays(prev => {
+      const next = new Set(prev)
+      if (next.has(dateStr)) next.delete(dateStr)
+      else next.add(dateStr)
+      return next
+    })
+  }
+
+  // From the calendar: switch to the list with that day open and scrolled to.
+  function openDayInList(dateStr) {
+    setView('list')
+    if (!isDayOpen(dateStr)) toggleDay(dateStr)
+    setTimeout(() => {
+      document.getElementById(`day-${dateStr}`)?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+    }, 50)
+  }
+
+  // Everything shown for one day. Travel + events + check-ins + check-outs are
+  // merged into one chronological list: travel cards carry a full ISO
+  // timestamp in _sortAt; events and accommodation cards carry HH:MM. Missing
+  // times sort to the bottom. Middle "stay" nights have no time, so they are
+  // kept apart as context cards.
+  function dayContents(dateStr) {
+    const dayEvents = events.filter(e => e.date === dateStr)
+    const dayTravel = travelByDate[dateStr] || []
+    const dayAccoms = accomsByDate[dateStr] || []
+    const chronoItems = []
+    dayTravel.forEach((card, ci) => {
+      const t = (card._sortAt || '').slice(11, 16) || '99:99'
+      chronoItems.push({ kind: 'travel', card, _sort: t, _key: `t-${ci}` })
+    })
+    dayEvents.forEach(event => {
+      chronoItems.push({ kind: 'event', event, _sort: event.time || '99:99', _key: `e-${event.id}` })
+    })
+    dayAccoms.forEach((card, ci) => {
+      if (card.kind === 'stay') return
+      chronoItems.push({ kind: card.kind, card, _sort: card.time || '99:99', _key: `${card.kind}-${ci}` })
+    })
+    chronoItems.sort((a, b) => a._sort.localeCompare(b._sort))
+    return {
+      dayEvents, dayTravel, dayAccoms, chronoItems,
+      dayStays: dayAccoms.filter(a => a.kind === 'stay'),
+      totalItems: dayEvents.length + dayTravel.length + dayAccoms.length,
+    }
+  }
 
   useEffect(() => {
     loadEvents()
@@ -900,56 +956,59 @@ export default function ItineraryTab({
         </div>
       )}
 
-      {/* Whole-trip export */}
-      {days.length > 0 && events.length > 0 && (
-        <button
-          onClick={() => setExportScope('all')}
-          className="w-full flex items-center justify-center gap-2 py-3 rounded-2xl text-xs mb-1 transition-all"
-          style={{ background: 'rgba(212,184,122,0.07)', border: '1px solid rgba(212,184,122,0.15)', color: '#d4b87a' }}>
-          <CalendarDays size={13} />Export all events to calendar
-        </button>
+      {days.length > 0 && (
+        <div className="flex gap-2 mb-1">
+          {/* List / calendar switch */}
+          <div className="flex p-1 rounded-2xl flex-shrink-0"
+            style={{ background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.07)' }}>
+            {[
+              { value: 'list', label: 'List', icon: <List size={12} /> },
+              { value: 'calendar', label: 'Calendar', icon: <CalendarDays size={12} /> },
+            ].map(({ value, label, icon }) => (
+              <button key={value} onClick={() => setView(value)}
+                className="flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs transition-all"
+                style={view === value
+                  ? { background: 'rgba(212,184,122,0.15)', color: '#d4b87a' }
+                  : { color: '#5a5248' }}>
+                {icon}{label}
+              </button>
+            ))}
+          </div>
+
+          {/* Whole-trip export */}
+          {events.length > 0 && (
+            <button
+              onClick={() => setExportScope('all')}
+              className="flex-1 min-w-0 flex items-center justify-center gap-2 py-3 rounded-2xl text-xs transition-all"
+              style={{ background: 'rgba(212,184,122,0.07)', border: '1px solid rgba(212,184,122,0.15)', color: '#d4b87a' }}>
+              <CalendarDays size={13} className="flex-shrink-0" /><span className="truncate">Export to calendar</span>
+            </button>
+          )}
+        </div>
       )}
 
-      {days.map((day, idx) => {
-        const dateStr = format(day, 'yyyy-MM-dd')
-        const dayEvents = events.filter(e => e.date === dateStr)
-        const dayWeather = weather.find(w => w.date === dateStr)
-        const dayTravel = travelByDate[dateStr] || []
-        const dayAccoms = accomsByDate[dateStr] || []
-        // Middle "stay" nights have no time — render as context cards above
-        // the chronological list. Check-ins and check-outs are interleaved
-        // with travel + events using their (real or default) time.
-        const dayStays = dayAccoms.filter(a => a.kind === 'stay')
-        const dayCheckins = dayAccoms.filter(a => a.kind === 'checkin')
-        const dayCheckouts = dayAccoms.filter(a => a.kind === 'checkout')
-        const totalItems = dayEvents.length + dayTravel.length + dayAccoms.length
-        const isOpen = expandedDay === idx
+      {view === 'calendar' && days.length > 0 && (
+        <ItineraryCalendar
+          days={days}
+          todayStr={todayStr}
+          weather={weather}
+          dayContents={dayContents}
+          onPickDay={openDayInList}
+        />
+      )}
 
-        // Merge travel + events + check-ins + check-outs into one chronological
-        // list. Travel cards carry a full ISO timestamp in _sortAt; events and
-        // accommodation cards carry HH:MM. Missing times sort to the bottom.
-        const chronoItems = []
-        dayTravel.forEach((card, ci) => {
-          const t = (card._sortAt || '').slice(11, 16) || '99:99'
-          chronoItems.push({ kind: 'travel', card, _sort: t, _key: `t-${ci}` })
-        })
-        dayEvents.forEach(event => {
-          chronoItems.push({ kind: 'event', event, _sort: event.time || '99:99', _key: `e-${event.id}` })
-        })
-        dayCheckins.forEach((card, ci) => {
-          chronoItems.push({ kind: 'checkin', card, _sort: card.time || '99:99', _key: `ci-${ci}` })
-        })
-        dayCheckouts.forEach((card, ci) => {
-          chronoItems.push({ kind: 'checkout', card, _sort: card.time || '99:99', _key: `co-${ci}` })
-        })
-        chronoItems.sort((a, b) => a._sort.localeCompare(b._sort))
+      {view === 'list' && days.map((day, idx) => {
+        const dateStr = format(day, 'yyyy-MM-dd')
+        const dayWeather = weather.find(w => w.date === dateStr)
+        const { dayEvents, dayTravel, dayAccoms, dayStays, chronoItems, totalItems } = dayContents(dateStr)
+        const isOpen = isDayOpen(dateStr)
 
         return (
-          <div key={dateStr} className="glass rounded-2xl overflow-hidden fade-in"
-            style={{ animationDelay: `${idx * 0.04}s` }}>
+          <div key={dateStr} id={`day-${dateStr}`} className="glass rounded-2xl overflow-hidden fade-in"
+            style={{ animationDelay: `${idx * 0.04}s`, scrollMarginTop: 16 }}>
 
             {/* ── Day header ── */}
-            <button onClick={() => setExpandedDay(isOpen ? -1 : idx)}
+            <button onClick={() => toggleDay(dateStr)}
               className="w-full flex items-center justify-between px-5 py-4">
               <div className="flex items-center gap-4">
                 <div className="text-center flex-shrink-0 w-8">
@@ -1051,7 +1110,7 @@ export default function ItineraryTab({
                         return <CheckoutLine key={item._key} card={item.card} />
                       }
                       // event
-                      return editingId === item.event.id ? (
+                      return editingId === item.event.id && !readOnly ? (
                         <EventEditForm
                           key={item._key}
                           form={editForm}
@@ -1068,7 +1127,7 @@ export default function ItineraryTab({
                           members={members}
                           onEdit={() => startEdit(item.event)}
                           onDelete={() => deleteEvent(item.event.id)}
-                          canEdit={true}
+                          canEdit={!readOnly}
                         />
                       )
                     })}
@@ -1079,7 +1138,7 @@ export default function ItineraryTab({
                   <p className="text-xs text-center py-3" style={{ color: '#3d3830' }}>No events yet.</p>
                 )}
 
-                {showAddForm === dateStr ? (
+                {showAddForm === dateStr && !readOnly ? (
                   <EventAddForm
                     form={addForm}
                     setForm={setAddForm}
@@ -1088,22 +1147,24 @@ export default function ItineraryTab({
                     onSave={() => addEvent(dateStr)}
                     onCancel={() => { setShowAddForm(null); setAddForm({ ...BLANK_FORM, timezone: trip.timezone || '' }) }}
                   />
-                ) : (
+                ) : (!readOnly || dayEvents.length > 0) && (
                   <div className="flex gap-2 mt-1">
-                    <button
-                      onClick={() => {
-                        setShowAddForm(dateStr)
-                        setEditingId(null)
-                        setAddForm({ ...BLANK_FORM, timezone: trip.timezone || '' })
-                      }}
-                      className="flex-1 flex items-center justify-center gap-2 py-3 rounded-xl text-xs transition-all"
-                      style={{ color: '#5a5248', border: '1px dashed rgba(212,184,122,0.2)' }}>
-                      <Plus size={12} />Add event
-                    </button>
+                    {!readOnly && (
+                      <button
+                        onClick={() => {
+                          setShowAddForm(dateStr)
+                          setEditingId(null)
+                          setAddForm({ ...BLANK_FORM, timezone: trip.timezone || '' })
+                        }}
+                        className="flex-1 flex items-center justify-center gap-2 py-3 rounded-xl text-xs transition-all"
+                        style={{ color: '#5a5248', border: '1px dashed rgba(212,184,122,0.2)' }}>
+                        <Plus size={12} />Add event
+                      </button>
+                    )}
                     {dayEvents.length > 0 && (
                       <button
                         onClick={() => setExportScope(dateStr)}
-                        className="flex items-center justify-center gap-1.5 px-4 py-3 rounded-xl text-xs transition-all"
+                        className={`${readOnly ? 'flex-1 ' : ''}flex items-center justify-center gap-1.5 px-4 py-3 rounded-xl text-xs transition-all`}
                         style={{ color: '#5a5248', border: '1px solid rgba(255,255,255,0.07)', background: 'rgba(255,255,255,0.03)' }}
                         title="Export this day to calendar">
                         <CalendarDays size={12} />Export
@@ -1128,6 +1189,105 @@ export default function ItineraryTab({
           onClose={() => setExportScope(null)}
         />
       )}
+    </div>
+  )
+}
+
+// ─── Calendar view ────────────────────────────────────────────────────────────
+// A month grid for each month the trip touches. Trip days show what's planned
+// (emoji only on phones, titles on wider screens); tapping one opens it in the
+// list view.
+
+const WEEKDAYS = ['S', 'M', 'T', 'W', 'T', 'F', 'S']
+
+function chipFor(item) {
+  if (item.kind === 'event') {
+    const t = EVENT_TYPES.find(x => x.value === item.event.type) || EVENT_TYPES[0]
+    return { emoji: t.emoji, label: item.event.title, color: t.color }
+  }
+  if (item.kind === 'travel') {
+    const c = item.card
+    return { emoji: c.meta.icon, label: c.to || c.number || 'Travel', color: c.meta.color }
+  }
+  return {
+    emoji: '🏨',
+    label: `${item.kind === 'checkout' ? 'Out: ' : ''}${item.card.name || 'Stay'}`,
+    color: '#8aab8e',
+  }
+}
+
+function ItineraryCalendar({ days, todayStr, weather, dayContents, onPickDay }) {
+  const tripDates = new Set(days.map(d => format(d, 'yyyy-MM-dd')))
+  const months = eachMonthOfInterval({ start: days[0], end: days[days.length - 1] })
+
+  return (
+    <div className="space-y-3">
+      {months.map(month => {
+        // Only the weeks of this month that the trip touches.
+        const first = days[0] > startOfMonth(month) ? days[0] : startOfMonth(month)
+        const last = days[days.length - 1] < endOfMonth(month) ? days[days.length - 1] : endOfMonth(month)
+        const cells = eachDayOfInterval({ start: startOfWeek(first), end: endOfWeek(last) })
+        return (
+          <div key={format(month, 'yyyy-MM')} className="glass rounded-2xl p-3 fade-in">
+            <p className="font-display text-lg font-light px-1 mb-2" style={{ color: '#e8d5a3' }}>
+              {format(month, 'MMMM yyyy')}
+            </p>
+            <div className="grid grid-cols-7 gap-1">
+              {WEEKDAYS.map((w, i) => (
+                <p key={i} className="text-[10px] text-center tracking-widest" style={{ color: '#5a5248' }}>{w}</p>
+              ))}
+              {cells.map(cell => {
+                const dateStr = format(cell, 'yyyy-MM-dd')
+                const inMonth = cell.getMonth() === month.getMonth()
+                if (!inMonth) return <div key={dateStr} />
+                const inTrip = tripDates.has(dateStr)
+                const isToday = dateStr === todayStr
+                if (!inTrip) {
+                  return (
+                    <div key={dateStr} className="min-h-14 sm:min-h-20 rounded-lg p-1">
+                      <p className="text-[11px]" style={{ color: '#3d3830' }}>{format(cell, 'd')}</p>
+                    </div>
+                  )
+                }
+                const { chronoItems, dayStays } = dayContents(dateStr)
+                const chips = chronoItems.map(chipFor)
+                const dayWeather = weather.find(w => w.date === dateStr)
+                const past = dateStr < todayStr
+                return (
+                  <button key={dateStr} onClick={() => onPickDay(dateStr)}
+                    className="min-h-14 sm:min-h-20 rounded-lg p-1 text-left flex flex-col gap-0.5 overflow-hidden transition-all active:scale-95"
+                    style={{
+                      background: 'rgba(212,184,122,0.07)',
+                      border: isToday ? '1px solid #d4b87a' : '1px solid rgba(212,184,122,0.15)',
+                      opacity: past ? 0.5 : 1,
+                    }}>
+                    <div className="flex items-center justify-between">
+                      <span className="text-[11px] font-medium" style={{ color: '#e8d5a3' }}>{format(cell, 'd')}</span>
+                      {dayWeather && <span className="text-[10px] leading-none">{dayWeather.icon}</span>}
+                    </div>
+                    {/* Phones: emoji only */}
+                    <div className="flex flex-wrap gap-px text-[11px] leading-tight sm:hidden">
+                      {chips.slice(0, 3).map((c, i) => <span key={i}>{c.emoji}</span>)}
+                      {chips.length > 3 && <span className="text-[9px]" style={{ color: '#5a5248' }}>+{chips.length - 3}</span>}
+                      {chips.length === 0 && dayStays.length > 0 && <span>🏨</span>}
+                    </div>
+                    {/* Wider screens: titles */}
+                    <div className="hidden sm:flex flex-col gap-0.5 min-w-0">
+                      {chips.slice(0, 3).map((c, i) => (
+                        <span key={i} className="text-[10px] truncate rounded px-1"
+                          style={{ background: `${c.color}22`, color: c.color }}>
+                          {c.emoji} {c.label}
+                        </span>
+                      ))}
+                      {chips.length > 3 && <span className="text-[10px] px-1" style={{ color: '#5a5248' }}>+{chips.length - 3} more</span>}
+                    </div>
+                  </button>
+                )
+              })}
+            </div>
+          </div>
+        )
+      })}
     </div>
   )
 }

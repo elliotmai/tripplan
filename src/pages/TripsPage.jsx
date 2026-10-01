@@ -4,7 +4,7 @@ import { collection, query, where, getDocs, doc, getDoc } from 'firebase/firesto
 import { db } from '../lib/firebase'
 import { useAuth } from '../contexts/AuthContext'
 import { format, parseISO, differenceInDays } from 'date-fns'
-import { Plus, MapPin, Calendar, ChevronRight, Eye } from 'lucide-react'
+import { Plus, MapPin, Calendar, ChevronRight, ChevronDown, Eye } from 'lucide-react'
 import NewTripModal from '../components/NewTripModal'
 import BottomNav from '../components/BottomNav'
 
@@ -12,9 +12,9 @@ export default function TripsPage() {
   const { user } = useAuth()
   const navigate = useNavigate()
   const [trips, setTrips] = useState([])
-  const [observedTrips, setObservedTrips] = useState([])
   const [loading, setLoading] = useState(true)
   const [showNew, setShowNew] = useState(false)
+  const [showPast, setShowPast] = useState(false)
 
   useEffect(() => { if (user?.id) loadTrips() }, [user?.id])
 
@@ -35,25 +35,20 @@ export default function TripsPage() {
       const snaps = await Promise.all(chunk.map(id => getDoc(doc(db, 'trips', id))))
       snaps.forEach(s => s.exists() && tripDocs.push({ id: s.id, ...s.data() }))
     }
-    setTrips(tripDocs)
 
-    // Trips this user observes (BCC viewer) — shown in a separate section.
+    // Trips this user observes (BCC viewer) — listed alongside their own trips,
+    // flagged so the card can show an "Observer" pill.
     const obsSnap = await getDocs(
       query(collection(db, 'trip_observers'), where('user_id', '==', user.id))
     )
     const obsIds = [...new Set(obsSnap.docs.map(d => d.data().trip_id))]
       .filter(id => !tripIds.includes(id)) // don't double-list trips you're also on
-    if (obsIds.length) {
-      const obsDocs = []
-      for (const c of (function () { const o = []; for (let i = 0; i < obsIds.length; i += 30) o.push(obsIds.slice(i, i + 30)); return o })()) {
-        const snaps = await Promise.all(c.map(id => getDoc(doc(db, 'trips', id))))
-        snaps.forEach(s => s.exists() && obsDocs.push({ id: s.id, ...s.data() }))
-      }
-      setObservedTrips(obsDocs)
-    } else {
-      setObservedTrips([])
+    for (let i = 0; i < obsIds.length; i += 30) {
+      const snaps = await Promise.all(obsIds.slice(i, i + 30).map(id => getDoc(doc(db, 'trips', id))))
+      snaps.forEach(s => s.exists() && tripDocs.push({ id: s.id, ...s.data(), observing: true }))
     }
 
+    setTrips(tripDocs)
     setLoading(false)
   }
 
@@ -93,7 +88,7 @@ export default function TripsPage() {
           <div className="space-y-4 pt-2">
             {[1, 2, 3].map(i => <div key={i} className="h-32 rounded-2xl shimmer" style={{ background: '#1c1916' }} />)}
           </div>
-        ) : trips.length === 0 && observedTrips.length === 0 ? (
+        ) : trips.length === 0 ? (
           <div className="text-center py-20 fade-in">
             <div className="text-6xl mb-4">✈️</div>
             <p className="font-display text-2xl font-light mb-2" style={{ color: '#e8d5a3' }}>No trips yet</p>
@@ -116,20 +111,22 @@ export default function TripsPage() {
             )}
             {past.length > 0 && (
               <section className="fade-in">
-                <h2 className="text-xs tracking-[0.2em] uppercase mb-4" style={{ color: '#5a5248' }}>Past</h2>
-                <div className="space-y-3">
-                  {past.map(trip => <TripCard key={trip.id} trip={trip} onClick={() => navigate(`/trips/${trip.id}`)} past />)}
-                </div>
-              </section>
-            )}
-            {observedTrips.length > 0 && (
-              <section className="fade-in">
-                <h2 className="text-xs tracking-[0.2em] uppercase mb-4 flex items-center gap-1.5" style={{ color: '#5a5248' }}>
-                  <Eye size={11} />Observing
-                </h2>
-                <div className="space-y-3">
-                  {observedTrips.map(trip => <TripCard key={trip.id} trip={trip} onClick={() => navigate(`/trips/${trip.id}`)} />)}
-                </div>
+                <button onClick={() => setShowPast(s => !s)}
+                  className="w-full flex items-center justify-between mb-4" aria-expanded={showPast}>
+                  <h2 className="text-xs tracking-[0.2em] uppercase" style={{ color: '#5a5248' }}>
+                    Past <span style={{ color: '#3d3830' }}>· {past.length}</span>
+                  </h2>
+                  <ChevronDown size={14} style={{
+                    color: '#5a5248',
+                    transform: showPast ? 'rotate(180deg)' : 'none',
+                    transition: 'transform 0.2s',
+                  }} />
+                </button>
+                {showPast && (
+                  <div className="space-y-3 slide-up">
+                    {past.map(trip => <TripCard key={trip.id} trip={trip} onClick={() => navigate(`/trips/${trip.id}`)} past />)}
+                  </div>
+                )}
               </section>
             )}
           </>
@@ -154,7 +151,15 @@ function TripCard({ trip, onClick, past }) {
         {trip.cover_emoji || '✈️'}
       </div>
       <div className="flex-1 min-w-0">
-        <p className="font-display text-xl font-light truncate" style={{ color: '#e8d5a3' }}>{trip.name}</p>
+        <div className="flex items-center gap-2 min-w-0">
+          <p className="font-display text-xl font-light truncate" style={{ color: '#e8d5a3' }}>{trip.name}</p>
+          {trip.observing && (
+            <span className="flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] flex-shrink-0"
+              style={{ background: 'rgba(122,154,181,0.12)', color: '#7a9ab5', border: '1px solid rgba(122,154,181,0.25)' }}>
+              <Eye size={9} />Observer
+            </span>
+          )}
+        </div>
         <div className="flex items-center gap-1 mt-0.5" style={{ color: '#5a5248' }}>
           <MapPin size={11} /><span className="text-xs truncate">{trip.destination}</span>
         </div>

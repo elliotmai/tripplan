@@ -50,24 +50,37 @@ service cloud.firestore {
     }
 
     // POLLS
+    // Only the poll's creator can edit or delete it. Editing can't hand the
+    // poll to someone else.
     match /polls/{pollId} {
-      allow read, create: if request.auth != null;
-      allow delete:       if request.auth != null
-                          && resource.data.created_by == request.auth.uid;
+      allow read, create:   if request.auth != null;
+      allow update:         if request.auth != null
+                            && resource.data.created_by == request.auth.uid
+                            && request.resource.data.created_by == resource.data.created_by;
+      allow delete:         if request.auth != null
+                            && resource.data.created_by == request.auth.uid;
     }
 
     // POLL OPTIONS
+    // The poll's creator can rename or remove options when editing or deleting
+    // the poll. Options are removed before the poll itself, so the parent poll
+    // still exists when this runs.
     match /poll_options/{optionId} {
-      allow read, create: if request.auth != null;
+      allow read, create:   if request.auth != null;
+      allow update, delete: if request.auth != null
+                            && get(/databases/$(database)/documents/polls/$(resource.data.poll_id)).data.created_by == request.auth.uid;
     }
 
     // POLL VOTES
+    // Delete: your own vote, OR the poll's creator clearing votes when an
+    // option or the whole poll is removed.
     match /poll_votes/{voteId} {
       allow read:   if request.auth != null;
       allow create: if request.auth != null
                     && request.resource.data.user_id == request.auth.uid;
       allow delete: if request.auth != null
-                    && resource.data.user_id == request.auth.uid;
+                    && (resource.data.user_id == request.auth.uid
+                        || get(/databases/$(database)/documents/polls/$(resource.data.poll_id)).data.created_by == request.auth.uid);
     }
 
     // TRIP OBSERVERS (BCC-style viewers)

@@ -8,7 +8,7 @@ import { logActivity, fieldDiff, fieldSummaryLines } from '../lib/activity'
 import { format } from 'date-fns'
 import {
   Plus, ThumbsUp, MessageCircle, Trash2, X, Check, Send, ExternalLink,
-  Pencil, CalendarPlus, ChevronDown, ChevronUp,
+  Pencil, CalendarPlus, ChevronDown, ChevronUp, Archive, ArchiveRestore,
 } from 'lucide-react'
 
 // Ideas + Polls, unified. The idea board is the low-friction scratchpad where
@@ -70,6 +70,11 @@ export default function IdeasTab({
   const [votes, setVotes]         = useState([])
   const [expandedPoll, setExpandedPoll] = useState(null)
   const [showPollForm, setShowPollForm] = useState(false)
+  const [editingPollId, setEditingPollId] = useState(null)
+  const [showArchived, setShowArchived] = useState(false)
+
+  const activeIdeas   = ideas.filter(i => !i.archived)
+  const archivedIdeas = ideas.filter(i => i.archived)
 
   const nameOf = id =>
     members.find(m => m.id === id)?.full_name?.split(' ')[0] || 'Someone'
@@ -205,6 +210,18 @@ export default function IdeasTab({
     load()
   }
 
+  // Archiving tucks an idea away without losing its votes or comments. Any
+  // traveller can do it (it's reversible), not just the idea's author.
+  async function setArchived(idea, archived) {
+    await updateDoc(doc(db, 'brainstorm_ideas', idea.id), { archived })
+    await logActivity(tripId, currentUser, {
+      action: 'update', entity: 'idea',
+      summary: `${archived ? 'Archived' : 'Restored'} the idea “${idea.title}”`,
+      undo: { ops: [{ op: 'update', collection: 'brainstorm_ideas', docId: idea.id, data: { archived: !archived } }] },
+    })
+    load()
+  }
+
   async function addToTrip(idea, date, time) {
     const notesParts = [idea.note, ...ideaLinks(idea)].filter(Boolean)
     const payload = {
@@ -307,6 +324,62 @@ export default function IdeasTab({
     loadPolls(); onPollsChanged?.()
   }
 
+  // Apply an edit from PollForm. Options keep their ids when renamed so their
+  // votes survive; removed options take their votes with them.
+  async function updatePoll(poll, { question, options, day }) {
+    setSaving(true)
+    const oldOptions = poll.poll_options || []
+    const keptIds = new Set(options.filter(o => o.id).map(o => o.id))
+    const removed = oldOptions.filter(o => !keptIds.has(o.id))
+    const removedVotes = votes.filter(v => removed.some(o => o.id === v.option_id))
+    const renamed = options.filter(o => o.id && oldOptions.find(x => x.id === o.id)?.text !== o.text)
+    const added = options.filter(o => !o.id)
+
+    await Promise.all([
+      ...removedVotes.map(v => deleteDoc(doc(db, 'poll_votes', v.id))),
+      ...removed.map(o => deleteDoc(doc(db, 'poll_options', o.id))),
+      ...renamed.map(o => updateDoc(doc(db, 'poll_options', o.id), { text: o.text })),
+    ])
+    const addedRefs = await Promise.all(added.map(o =>
+      addDoc(collection(db, 'poll_options'), {
+        poll_id: poll.id, text: o.text, ...(o.idea_id ? { idea_id: o.idea_id } : {}),
+      })
+    ))
+    await updateDoc(doc(db, 'polls', poll.id), { question: question.trim(), day: day || '' })
+
+    const details = []
+    if (poll.question !== question.trim()) details.push(`Question: “${poll.question}” → “${question.trim()}”`)
+    if ((poll.day || '') !== (day || '')) details.push(`Day: ${poll.day || '—'} → ${day || '—'}`)
+    renamed.forEach(o => details.push(`Renamed “${oldOptions.find(x => x.id === o.id).text}” → “${o.text}”`))
+    added.forEach(o => details.push(`Added option “${o.text}”`))
+    removed.forEach(o => details.push(`Removed option “${o.text}”`))
+    if (removedVotes.length) details.push(`${removedVotes.length} vote${removedVotes.length !== 1 ? 's' : ''} removed`)
+
+    if (details.length) {
+      await logActivity(tripId, currentUser, {
+        action: 'update', entity: 'poll',
+        summary: `Edited the poll “${question.trim()}”`,
+        details,
+        // Undo puts back the old question/day, names, removed options and
+        // their votes, and drops any options that were added.
+        undo: { ops: [
+          { op: 'update', collection: 'polls', docId: poll.id, data: { question: poll.question, day: poll.day || '' } },
+          ...renamed.map(o => ({ op: 'update', collection: 'poll_options', docId: o.id, data: { text: oldOptions.find(x => x.id === o.id).text } })),
+          ...removed.map(o => ({ op: 'set', collection: 'poll_options', docId: o.id, data: {
+            poll_id: o.poll_id, text: o.text, ...(o.idea_id ? { idea_id: o.idea_id } : {}),
+          } })),
+          ...removedVotes.map(v => ({ op: 'set', collection: 'poll_votes', docId: v.id, data: {
+            poll_id: v.poll_id, option_id: v.option_id, user_id: v.user_id,
+            trip_id: v.trip_id, created_at: v.created_at,
+          } })),
+          ...addedRefs.map(r => ({ op: 'delete', collection: 'poll_options', docId: r.id })),
+        ] },
+      })
+    }
+    setEditingPollId(null); setSaving(false)
+    loadPolls(); onPollsChanged?.()
+  }
+
   async function deletePoll(poll) {
     const pollVotes = votes.filter(v => v.poll_id === poll.id)
     const options = poll.poll_options || []
@@ -369,7 +442,7 @@ export default function IdeasTab({
 
       {showPollForm && !readOnly && (
         <PollForm
-          ideas={ideas} trip={trip} days={days} saving={saving}
+          ideas={activeIdeas} trip={trip} days={days} saving={saving}
           onSave={createPoll}
           onCancel={() => setShowPollForm(false)}
         />
@@ -379,12 +452,20 @@ export default function IdeasTab({
       {polls.length > 0 && (
         <div className="space-y-3">
           <p className="text-xs tracking-widest uppercase pt-1" style={{ color: '#5a5248' }}>Polls · Decide</p>
-          {polls.map(poll => (
+          {polls.map(poll => editingPollId === poll.id && !readOnly ? (
+            <PollForm
+              key={poll.id} poll={poll} votes={votes}
+              ideas={ideas} trip={trip} days={days} saving={saving}
+              onSave={data => updatePoll(poll, data)}
+              onCancel={() => setEditingPollId(null)}
+            />
+          ) : (
             <PollCard
               key={poll.id} poll={poll} votes={votes} currentUser={currentUser}
               expanded={expandedPoll === poll.id} readOnly={readOnly}
               onToggle={() => setExpandedPoll(expandedPoll === poll.id ? null : poll.id)}
               onVote={optId => vote(poll.id, optId)}
+              onEdit={() => { setEditingPollId(poll.id); setShowPollForm(false); setShowForm(false); setEditingId(null) }}
               onDelete={() => deletePoll(poll)}
             />
           ))}
@@ -396,10 +477,12 @@ export default function IdeasTab({
         <p className="text-xs tracking-widest uppercase pt-2" style={{ color: '#5a5248' }}>Ideas · Brainstorm</p>
       )}
 
-      {ideas.length === 0 && !showForm && (
+      {activeIdeas.length === 0 && !showForm && (
         <div className="text-center py-16 fade-in">
           <div className="text-5xl mb-4">💭</div>
-          <p className="font-display text-xl font-light" style={{ color: '#e8d5a3' }}>No ideas yet</p>
+          <p className="font-display text-xl font-light" style={{ color: '#e8d5a3' }}>
+            {archivedIdeas.length ? 'No open ideas' : 'No ideas yet'}
+          </p>
           <p className="text-sm mt-2" style={{ color: '#5a5248' }}>
             Toss out places, activities, or anything you're dreaming up — upvote the best, then bundle them into a poll to decide.
           </p>
@@ -407,7 +490,7 @@ export default function IdeasTab({
       )}
 
       <div className="grid gap-3">
-        {ideas.map(idea => {
+        {activeIdeas.map(idea => {
           if (editingId === idea.id && !readOnly) {
             return (
               <IdeaForm
@@ -478,14 +561,21 @@ export default function IdeasTab({
                         Suggested by {nameOf(idea.created_by)}
                       </p>
                     </div>
-                    {canEdit && (
-                      <div className="flex items-center gap-1 flex-shrink-0">
-                        <button onClick={() => startEdit(idea)} style={{ color: '#7a9ab5' }} title="Edit">
-                          <Pencil size={12} />
+                    {!readOnly && (
+                      <div className="flex items-center gap-2 flex-shrink-0">
+                        {canEdit && (
+                          <button onClick={() => startEdit(idea)} style={{ color: '#7a9ab5' }} title="Edit">
+                            <Pencil size={12} />
+                          </button>
+                        )}
+                        <button onClick={() => setArchived(idea, true)} style={{ color: '#8a7f70' }} title="Archive">
+                          <Archive size={12} />
                         </button>
-                        <button onClick={() => deleteIdea(idea.id)} style={{ color: '#c47c5a' }} title="Delete">
-                          <Trash2 size={12} />
-                        </button>
+                        {canEdit && (
+                          <button onClick={() => deleteIdea(idea.id)} style={{ color: '#c47c5a' }} title="Delete">
+                            <Trash2 size={12} />
+                          </button>
+                        )}
                       </div>
                     )}
                   </div>
@@ -528,16 +618,56 @@ export default function IdeasTab({
           )
         })}
       </div>
+
+      {/* ── Archived ideas (collapsed by default) ── */}
+      {archivedIdeas.length > 0 && (
+        <div className="pb-4">
+          <button onClick={() => setShowArchived(s => !s)}
+            className="w-full flex items-center justify-between py-2" aria-expanded={showArchived}>
+            <span className="flex items-center gap-1.5 text-xs tracking-widest uppercase" style={{ color: '#5a5248' }}>
+              <Archive size={11} />Archived <span style={{ color: '#3d3830' }}>· {archivedIdeas.length}</span>
+            </span>
+            {showArchived ? <ChevronUp size={14} style={{ color: '#5a5248' }} /> : <ChevronDown size={14} style={{ color: '#5a5248' }} />}
+          </button>
+          {showArchived && (
+            <div className="space-y-2 mt-2 slide-up">
+              {archivedIdeas.map(idea => (
+                <div key={idea.id} className="rounded-xl px-4 py-3 flex items-center gap-3"
+                  style={{ background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.05)' }}>
+                  <span className="text-sm flex-shrink-0">{catOf(idea.category).emoji}</span>
+                  <div className="flex-1 min-w-0">
+                    <p className="text-sm truncate" style={{ color: '#8a7f70' }}>{idea.title}</p>
+                    <p className="text-xs" style={{ color: '#3d3830' }}>
+                      {idea.liked_by?.length || 0} upvote{(idea.liked_by?.length || 0) !== 1 ? 's' : ''} · by {nameOf(idea.created_by)}
+                    </p>
+                  </div>
+                  {!readOnly && (
+                    <button onClick={() => setArchived(idea, false)}
+                      className="flex items-center gap-1 text-xs flex-shrink-0" style={{ color: '#7a9ab5' }} title="Restore">
+                      <ArchiveRestore size={12} />Restore
+                    </button>
+                  )}
+                  {idea.created_by === currentUser.id && !readOnly && (
+                    <button onClick={() => deleteIdea(idea.id)} style={{ color: '#c47c5a' }} title="Delete">
+                      <Trash2 size={12} />
+                    </button>
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
     </div>
   )
 }
 
 // ── Poll card ──────────────────────────────────────────────────────────────────
-function PollCard({ poll, votes, currentUser, expanded, readOnly, onToggle, onVote, onDelete }) {
+function PollCard({ poll, votes, currentUser, expanded, readOnly, onToggle, onVote, onEdit, onDelete }) {
   const pollVotes = votes.filter(v => v.poll_id === poll.id)
   const myVote    = pollVotes.find(v => v.user_id === currentUser.id)
   const total     = pollVotes.length
-  const canDelete = poll.created_by === currentUser.id && !readOnly
+  const canManage = poll.created_by === currentUser.id && !readOnly
   const dayLabel  = poll.day ? formatWhen(poll.day, '') : ''
 
   return (
@@ -558,8 +688,11 @@ function PollCard({ poll, votes, currentUser, expanded, readOnly, onToggle, onVo
           <p className="text-xs mt-1" style={{ color: '#5a5248' }}>{total} vote{total !== 1 ? 's' : ''}{myVote ? ' · voted' : ' · tap to vote'}</p>
         </button>
         <div className="flex items-center gap-2 flex-shrink-0">
-          {canDelete && (
-            <button onClick={onDelete} style={{ color: '#c47c5a' }} title="Delete poll"><Trash2 size={13} /></button>
+          {canManage && (
+            <>
+              <button onClick={onEdit} style={{ color: '#7a9ab5' }} title="Edit poll"><Pencil size={13} /></button>
+              <button onClick={onDelete} style={{ color: '#c47c5a' }} title="Delete poll"><Trash2 size={13} /></button>
+            </>
           )}
           <button onClick={onToggle} style={{ color: '#5a5248' }}>
             {expanded ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
@@ -598,26 +731,48 @@ function PollCard({ poll, votes, currentUser, expanded, readOnly, onToggle, onVo
 }
 
 // ── Poll builder — bundle ideas (and/or free text) into a poll ──────────────────
-function PollForm({ ideas, trip, days, saving, onSave, onCancel }) {
-  const [question, setQuestion] = useState('')
-  const [picked, setPicked]     = useState(new Set())   // idea ids chosen as options
-  const [extras, setExtras]     = useState([''])        // free-text options
-  const [day, setDay]           = useState('')
+// With `poll`, edits that poll: its existing options keep their ids (so their
+// votes survive a rename) and anything unticked or cleared is removed.
+function PollForm({ poll, votes = [], ideas, trip, days, saving, onSave, onCancel }) {
+  const editing   = !!poll
+  const oldOptions = poll?.poll_options || []
+  const ideaIds   = new Set(ideas.map(i => i.id))
+  // Existing options that came from a still-present idea, keyed by idea id.
+  const optionByIdea = Object.fromEntries(
+    oldOptions.filter(o => o.idea_id && ideaIds.has(o.idea_id)).map(o => [o.idea_id, o])
+  )
+
+  const [question, setQuestion] = useState(poll?.question || '')
+  const [picked, setPicked]     = useState(() => new Set(Object.keys(optionByIdea)))  // idea ids chosen as options
+  // Free-text options as { id?, text, idea_id? }; an id means it already exists.
+  const [extras, setExtras]     = useState(() => {
+    const rest = oldOptions.filter(o => !(o.idea_id && ideaIds.has(o.idea_id)))
+    return rest.length ? rest.map(o => ({ id: o.id, text: o.text, idea_id: o.idea_id })) : [{ text: '' }]
+  })
+  const [day, setDay]           = useState(poll?.day || '')
+  // Archived ideas stay hidden unless this poll already uses them.
+  const [listedIdeas]           = useState(() => ideas.filter(i => !i.archived || optionByIdea[i.id]))
 
   const toggle = id => setPicked(prev => {
     const n = new Set(prev); n.has(id) ? n.delete(id) : n.add(id); return n
   })
 
   const options = [
-    ...ideas.filter(i => picked.has(i.id)).map(i => ({ text: i.title, idea_id: i.id })),
-    ...extras.map(t => t.trim()).filter(Boolean).map(t => ({ text: t })),
+    ...listedIdeas.filter(i => picked.has(i.id)).map(i => optionByIdea[i.id]
+      ? { id: optionByIdea[i.id].id, text: optionByIdea[i.id].text, idea_id: i.id }
+      : { text: i.title, idea_id: i.id }),
+    ...extras.filter(e => e.text.trim()).map(e => ({ ...e, text: e.text.trim() })),
   ]
   const canCreate = question.trim() && options.length >= 2
+
+  const keptIds   = new Set(options.filter(o => o.id).map(o => o.id))
+  const dropped   = oldOptions.filter(o => !keptIds.has(o.id))
+  const lostVotes = votes.filter(v => dropped.some(o => o.id === v.option_id)).length
 
   return (
     <div className="glass rounded-2xl p-5 space-y-4 slide-up" style={{ border: '1px solid rgba(122,154,181,0.25)' }}>
       <div className="flex items-center justify-between">
-        <h3 className="font-display text-lg font-light" style={{ color: '#7a9ab5' }}>Create a poll</h3>
+        <h3 className="font-display text-lg font-light" style={{ color: '#7a9ab5' }}>{editing ? 'Edit poll' : 'Create a poll'}</h3>
         <button onClick={onCancel} style={{ color: '#5a5248' }}><X size={14} /></button>
       </div>
 
@@ -643,11 +798,11 @@ function PollForm({ ideas, trip, days, saving, onSave, onCancel }) {
         <p className="text-xs tracking-widest uppercase mb-2" style={{ color: '#5a5248' }}>
           Options from ideas
         </p>
-        {ideas.length === 0 ? (
+        {listedIdeas.length === 0 ? (
           <p className="text-xs" style={{ color: '#3d3830' }}>No ideas yet — add free-text options below.</p>
         ) : (
           <div className="flex flex-col gap-1.5">
-            {ideas.map(idea => {
+            {listedIdeas.map(idea => {
               const on = picked.has(idea.id)
               return (
                 <button key={idea.id} type="button" onClick={() => toggle(idea.id)}
@@ -676,8 +831,8 @@ function PollForm({ ideas, trip, days, saving, onSave, onCancel }) {
           {extras.map((opt, i) => (
             <div key={i} className="flex items-center gap-2">
               <span className="text-xs" style={{ color: '#5a5248' }}>+</span>
-              <input value={opt}
-                onChange={e => setExtras(extras.map((o, idx) => idx === i ? e.target.value : o))}
+              <input value={opt.text}
+                onChange={e => setExtras(extras.map((o, idx) => idx === i ? { ...o, text: e.target.value } : o))}
                 placeholder="Add another option"
                 className="flex-1 bg-transparent text-sm outline-none"
                 style={{ color: '#d4cfc8', borderBottom: '1px solid rgba(255,255,255,0.08)', paddingBottom: '6px' }} />
@@ -688,7 +843,7 @@ function PollForm({ ideas, trip, days, saving, onSave, onCancel }) {
             </div>
           ))}
         </div>
-        <button type="button" onClick={() => setExtras([...extras, ''])}
+        <button type="button" onClick={() => setExtras([...extras, { text: '' }])}
           className="flex items-center gap-1.5 text-xs mt-2" style={{ color: '#7a9ab5' }}>
           <Plus size={11} />Add option
         </button>
@@ -698,11 +853,18 @@ function PollForm({ ideas, trip, days, saving, onSave, onCancel }) {
         <button onClick={() => onSave({ question, options, day })} disabled={saving || !canCreate}
           className="flex-1 py-2 rounded-xl text-xs font-medium flex items-center justify-center gap-1.5"
           style={{ background: canCreate ? 'linear-gradient(135deg, #d4b87a 0%, #c19a4e 100%)' : '#3d3830', color: canCreate ? '#0a0908' : '#5a5248' }}>
-          {saving ? 'Creating…' : <><Check size={12} />Create poll ({options.length})</>}
+          {saving
+            ? (editing ? 'Saving…' : 'Creating…')
+            : <><Check size={12} />{editing ? 'Save changes' : `Create poll (${options.length})`}</>}
         </button>
         <button onClick={onCancel} className="px-4 py-2 rounded-xl text-xs"
           style={{ color: '#5a5248', background: 'rgba(255,255,255,0.04)' }}>Cancel</button>
       </div>
+      {editing && lostVotes > 0 && (
+        <p className="text-xs" style={{ color: '#c47c5a' }}>
+          Removing {dropped.length === 1 ? `“${dropped[0].text}”` : `${dropped.length} options`} will delete {lostVotes} vote{lostVotes !== 1 ? 's' : ''}.
+        </p>
+      )}
       {!canCreate && (
         <p className="text-xs" style={{ color: '#3d3830' }}>Pick a question and at least 2 options.</p>
       )}

@@ -24,9 +24,10 @@ export default function TripsPage() {
       query(collection(db, 'trip_members'), where('user_id', '==', user.id))
     )
     const tripIds = memSnap.docs.map(d => d.data().trip_id)
-    if (!tripIds.length) { setTrips([]); setLoading(false); return }
 
-    // Fetch each trip doc (Firestore 'in' supports up to 30 items)
+    // Fetch each trip doc (Firestore 'in' supports up to 30 items). No early
+    // return when the list is empty: someone who only observes trips has no
+    // memberships but still needs the observed query below to run.
     const chunks = []
     for (let i = 0; i < tripIds.length; i += 30) chunks.push(tripIds.slice(i, i + 30))
     const tripDocs = []

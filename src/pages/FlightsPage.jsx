@@ -1,7 +1,7 @@
 import { useState, useEffect, useMemo } from 'react'
 import { collection, query, where, getDocs, doc, getDoc } from 'firebase/firestore'
 import { db } from '../lib/firebase'
-import { useAuth } from '../contexts/AuthContext'
+import { useAuth } from '../contexts/useAuth'
 import { normalizeLegs } from '../lib/travel'
 import { toTrackableFlights, isFlightActiveNow } from '../lib/flightTracking'
 import { formatWithTZ, wallClockToInstant } from '../lib/timezones'
@@ -39,7 +39,61 @@ export default function FlightsPage() {
   const [loading, setLoading] = useState(true)
   const [now, setNow] = useState(() => Date.now())
 
-  useEffect(() => { if (user?.id) load() }, [user?.id])
+  useEffect(() => {
+    if (!user?.id) return
+    ;(async () => {
+      setLoading(true)
+
+      // 1. Trips the user belongs to.
+      const memSnap = await getDocs(query(collection(db, 'trip_members'), where('user_id', '==', user.id)))
+      const allTripIds = [...new Set(memSnap.docs.map(d => d.data().trip_id))]
+      if (!allTripIds.length) { setActiveTrips([]); setFlights([]); setLoading(false); return }
+
+      // 2. Trip docs → keep only the ones happening right now.
+      const today = new Date().toISOString().slice(0, 10)
+      const tripDocs = (await Promise.all(allTripIds.map(id => getDoc(doc(db, 'trips', id)))))
+        .filter(s => s.exists()).map(s => ({ id: s.id, ...s.data() }))
+        .filter(t => isHappening(t, today))
+      setActiveTrips(tripDocs)
+      const tripIds = tripDocs.map(t => t.id)
+      if (!tripIds.length) { setFlights([]); setLoading(false); return }
+
+      // 3. Legs / legacy details / members for just those trips.
+      const [sharedLegs, legacyDetails, allMembers] = await Promise.all([
+        byTripIds('trip_legs', tripIds),
+        byTripIds('travel_details', tripIds),
+        byTripIds('trip_members', tripIds),
+      ])
+
+      // 4. Resolve member profiles (names) once, for the whole set.
+      const memberIds = [...new Set(allMembers.map(m => m.user_id))]
+      const profileSnaps = await Promise.all(memberIds.map(id => getDoc(doc(db, 'profiles', id))))
+      const nameById = {}
+      profileSnaps.forEach(s => { nameById[s.id] = s.exists() ? (s.data().full_name || 'Unknown') : 'Unknown' })
+
+      // 5. Per trip: normalize legs (attaches traveler names) → enriched flights.
+      const tripById = Object.fromEntries(tripDocs.map(t => [t.id, t]))
+      const out = []
+      for (const tid of tripIds) {
+        const trip = tripById[tid]
+        if (!trip) continue
+        const members = allMembers
+          .filter(m => m.trip_id === tid)
+          .map(m => ({ id: m.user_id, full_name: nameById[m.user_id] || 'Unknown' }))
+        const legs = normalizeLegs({
+          legacyDetails: legacyDetails.filter(d => d.trip_id === tid),
+          sharedLegs: sharedLegs.filter(l => l.trip_id === tid),
+          members,
+        })
+        out.push(...toTrackableFlights(legs, {
+          tripId: tid, tripName: trip.name, tripEmoji: trip.cover_emoji,
+        }))
+      }
+
+      setFlights(out)
+      setLoading(false)
+    })()
+  }, [user?.id])
 
   // Re-evaluate the "active right now" window every minute so flights appear as
   // they take off and drop off after landing — without re-querying Firestore.
@@ -54,58 +108,6 @@ export default function FlightsPage() {
     [flights, now]
   )
 
-  async function load() {
-    setLoading(true)
-
-    // 1. Trips the user belongs to.
-    const memSnap = await getDocs(query(collection(db, 'trip_members'), where('user_id', '==', user.id)))
-    const allTripIds = [...new Set(memSnap.docs.map(d => d.data().trip_id))]
-    if (!allTripIds.length) { setActiveTrips([]); setFlights([]); setLoading(false); return }
-
-    // 2. Trip docs → keep only the ones happening right now.
-    const today = new Date().toISOString().slice(0, 10)
-    const tripDocs = (await Promise.all(allTripIds.map(id => getDoc(doc(db, 'trips', id)))))
-      .filter(s => s.exists()).map(s => ({ id: s.id, ...s.data() }))
-      .filter(t => isHappening(t, today))
-    setActiveTrips(tripDocs)
-    const tripIds = tripDocs.map(t => t.id)
-    if (!tripIds.length) { setFlights([]); setLoading(false); return }
-
-    // 3. Legs / legacy details / members for just those trips.
-    const [sharedLegs, legacyDetails, allMembers] = await Promise.all([
-      byTripIds('trip_legs', tripIds),
-      byTripIds('travel_details', tripIds),
-      byTripIds('trip_members', tripIds),
-    ])
-
-    // 4. Resolve member profiles (names) once, for the whole set.
-    const memberIds = [...new Set(allMembers.map(m => m.user_id))]
-    const profileSnaps = await Promise.all(memberIds.map(id => getDoc(doc(db, 'profiles', id))))
-    const nameById = {}
-    profileSnaps.forEach(s => { nameById[s.id] = s.exists() ? (s.data().full_name || 'Unknown') : 'Unknown' })
-
-    // 5. Per trip: normalize legs (attaches traveler names) → enriched flights.
-    const tripById = Object.fromEntries(tripDocs.map(t => [t.id, t]))
-    const out = []
-    for (const tid of tripIds) {
-      const trip = tripById[tid]
-      if (!trip) continue
-      const members = allMembers
-        .filter(m => m.trip_id === tid)
-        .map(m => ({ id: m.user_id, full_name: nameById[m.user_id] || 'Unknown' }))
-      const legs = normalizeLegs({
-        legacyDetails: legacyDetails.filter(d => d.trip_id === tid),
-        sharedLegs: sharedLegs.filter(l => l.trip_id === tid),
-        members,
-      })
-      out.push(...toTrackableFlights(legs, {
-        tripId: tid, tripName: trip.name, tripEmoji: trip.cover_emoji,
-      }))
-    }
-
-    setFlights(out)
-    setLoading(false)
-  }
 
   return (
     <div className="flex flex-col" style={{ background: '#0a0908', height: '100dvh' }}>

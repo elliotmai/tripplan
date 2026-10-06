@@ -1,5 +1,5 @@
-import { useEffect, useMemo, useState } from 'react'
-import { useAuth } from '../contexts/AuthContext'
+import { useEffect, useMemo, useReducer, useState } from 'react'
+import { useAuth } from '../contexts/useAuth'
 import {
   listFriendships, fetchProfiles, findProfileByEmail,
   sendFriendRequest, acceptFriendRequest, removeFriendship,
@@ -18,17 +18,22 @@ export default function FriendsPage() {
   const [adding, setAdding] = useState(false)
   const [feedback, setFeedback] = useState(null)  // { type, text }
 
-  useEffect(() => { if (user?.id) load() }, [user?.id])
+  const [version, reload] = useReducer(v => v + 1, 0)
 
-  async function load() {
-    setLoading(true)
-    const fs = await listFriendships(user.id)
-    const otherIds = fs.map(f => otherUid(f, user.id))
-    const profs = await fetchProfiles(otherIds)
-    setProfiles(Object.fromEntries(profs.map(p => [p.id, p])))
-    setFriendships(fs)
-    setLoading(false)
-  }
+  useEffect(() => {
+    if (!user?.id) return
+    let cancelled = false
+    ;(async () => {
+      const fs = await listFriendships(user.id)
+      const otherIds = fs.map(f => otherUid(f, user.id))
+      const profs = await fetchProfiles(otherIds)
+      if (cancelled) return
+      setProfiles(Object.fromEntries(profs.map(p => [p.id, p])))
+      setFriendships(fs)
+      setLoading(false)
+    })()
+    return () => { cancelled = true }
+  }, [user?.id, version])
 
   const { accepted, incoming, outgoing } = useMemo(
     () => partitionFriendships(friendships, user?.id),
@@ -61,7 +66,7 @@ export default function FriendsPage() {
         text: messages[result],
       })
       setEmail('')
-      await load()
+      reload()
     } finally {
       setAdding(false)
     }
@@ -69,13 +74,13 @@ export default function FriendsPage() {
 
   async function accept(id) {
     await acceptFriendRequest(id)
-    await load()
+    reload()
   }
 
   async function remove(id, confirmText) {
     if (confirmText && !confirm(confirmText)) return
     await removeFriendship(id)
-    await load()
+    reload()
   }
 
   return (

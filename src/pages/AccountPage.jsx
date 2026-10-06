@@ -2,7 +2,7 @@ import { useState, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { collection, query, where, getDocs, getDoc, doc } from 'firebase/firestore'
 import { db } from '../lib/firebase'
-import { useAuth } from '../contexts/AuthContext'
+import { useAuth } from '../contexts/useAuth'
 import { format, parseISO } from 'date-fns'
 import {
   User, MapPin, Plane, LogOut, Trash2,
@@ -187,91 +187,90 @@ export default function AccountPage() {
   const [showDelete, setShowDelete] = useState(false)
   const [deleting, setDeleting] = useState(false)
 
-  // Seed form from user profile
-  useEffect(() => {
-    if (user) {
-      setForm({
-        full_name: user.full_name || user.user_metadata?.full_name || '',
-        home_airport: user.home_airport || '',
-        home_city: user.home_city || '',
-      })
-    }
-  }, [user?.id])
+  // Seed form from user profile, once per signed-in user
+  const [seededFor, setSeededFor] = useState(null)
+  if (user && seededFor !== user.id) {
+    setSeededFor(user.id)
+    setForm({
+      full_name: user.full_name || user.user_metadata?.full_name || '',
+      home_airport: user.home_airport || '',
+      home_city: user.home_city || '',
+    })
+  }
 
   // Load travel stats
   useEffect(() => {
-    if (user) loadStats()
+    ;(async () => {
+      if (!user?.id) return
+
+      // 1. All trips this user is a member of
+      const myMemSnap = await getDocs(
+        query(collection(db, 'trip_members'), where('user_id', '==', user.id))
+      )
+      const myMemberships = myMemSnap.docs.map(d => d.data())
+      const tripIds = myMemberships.map(m => m.trip_id)
+
+      if (!tripIds.length) {
+        setStats({ trips: 0, upcoming: 0, partners: 0, topPartners: [] })
+        return
+      }
+
+      // 2. Fetch trip docs
+      const tripDocs = await Promise.all(tripIds.map(id => getDoc(doc(db, 'trips', id))))
+      const trips = tripDocs.filter(d => d.exists()).map(d => ({ id: d.id, ...d.data() }))
+
+      const today = new Date().toISOString().slice(0, 10)
+      const upcoming = trips.filter(t => t.start_date && t.start_date >= today)
+      const past = trips.filter(t => t.end_date && t.end_date < today)
+
+      // 3. Find all co-members across all trips
+      const allMemberSnaps = await Promise.all(
+        tripIds.map(tid =>
+          getDocs(query(collection(db, 'trip_members'), where('trip_id', '==', tid)))
+        )
+      )
+
+      // Count how many shared trips each partner has with current user
+      const partnerCount = {} // userId → count
+      allMemberSnaps.forEach(snap => {
+        snap.docs.forEach(d => {
+          const uid = d.data().user_id
+          if (uid === user.id) return
+          partnerCount[uid] = (partnerCount[uid] || 0) + 1
+        })
+      })
+
+      const partnerIds = Object.keys(partnerCount)
+
+      // 4. Fetch profiles for top partners (sorted by shared trip count)
+      const sortedPartnerIds = partnerIds
+        .sort((a, b) => partnerCount[b] - partnerCount[a])
+        .slice(0, 3)
+
+      const topPartnerProfiles = await Promise.all(
+        sortedPartnerIds.map(async uid => {
+          const snap = await getDoc(doc(db, 'profiles', uid))
+          const profile = snap.exists() ? snap.data() : { full_name: 'Unknown' }
+          return { ...profile, id: uid, sharedTrips: partnerCount[uid] }
+        })
+      )
+
+      // 5. Recent trips for the list
+      const sorted = [
+        ...upcoming.sort((a, b) => (a.start_date || '').localeCompare(b.start_date || '')),
+        ...past.sort((a, b) => (b.end_date || '').localeCompare(a.end_date || '')).slice(0, 3),
+      ]
+      setRecentTrips(sorted.slice(0, 5))
+
+      setStats({
+        trips: trips.length,
+        upcoming: upcoming.length,
+        partners: partnerIds.length,
+        topPartners: topPartnerProfiles,
+      })
+    })()
   }, [user?.id])
 
-  async function loadStats() {
-    if (!user?.id) return
-
-    // 1. All trips this user is a member of
-    const myMemSnap = await getDocs(
-      query(collection(db, 'trip_members'), where('user_id', '==', user.id))
-    )
-    const myMemberships = myMemSnap.docs.map(d => d.data())
-    const tripIds = myMemberships.map(m => m.trip_id)
-
-    if (!tripIds.length) {
-      setStats({ trips: 0, upcoming: 0, partners: 0, topPartners: [] })
-      return
-    }
-
-    // 2. Fetch trip docs
-    const tripDocs = await Promise.all(tripIds.map(id => getDoc(doc(db, 'trips', id))))
-    const trips = tripDocs.filter(d => d.exists()).map(d => ({ id: d.id, ...d.data() }))
-
-    const today = new Date().toISOString().slice(0, 10)
-    const upcoming = trips.filter(t => t.start_date && t.start_date >= today)
-    const past = trips.filter(t => t.end_date && t.end_date < today)
-
-    // 3. Find all co-members across all trips
-    const allMemberSnaps = await Promise.all(
-      tripIds.map(tid =>
-        getDocs(query(collection(db, 'trip_members'), where('trip_id', '==', tid)))
-      )
-    )
-
-    // Count how many shared trips each partner has with current user
-    const partnerCount = {} // userId → count
-    allMemberSnaps.forEach(snap => {
-      snap.docs.forEach(d => {
-        const uid = d.data().user_id
-        if (uid === user.id) return
-        partnerCount[uid] = (partnerCount[uid] || 0) + 1
-      })
-    })
-
-    const partnerIds = Object.keys(partnerCount)
-
-    // 4. Fetch profiles for top partners (sorted by shared trip count)
-    const sortedPartnerIds = partnerIds
-      .sort((a, b) => partnerCount[b] - partnerCount[a])
-      .slice(0, 3)
-
-    const topPartnerProfiles = await Promise.all(
-      sortedPartnerIds.map(async uid => {
-        const snap = await getDoc(doc(db, 'profiles', uid))
-        const profile = snap.exists() ? snap.data() : { full_name: 'Unknown' }
-        return { ...profile, id: uid, sharedTrips: partnerCount[uid] }
-      })
-    )
-
-    // 5. Recent trips for the list
-    const sorted = [
-      ...upcoming.sort((a, b) => (a.start_date || '').localeCompare(b.start_date || '')),
-      ...past.sort((a, b) => (b.end_date || '').localeCompare(a.end_date || '')).slice(0, 3),
-    ]
-    setRecentTrips(sorted.slice(0, 5))
-
-    setStats({
-      trips: trips.length,
-      upcoming: upcoming.length,
-      partners: partnerIds.length,
-      topPartners: topPartnerProfiles,
-    })
-  }
 
   function handleChange(field, value) {
     setForm(p => ({ ...p, [field]: value }))

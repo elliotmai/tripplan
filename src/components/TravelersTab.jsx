@@ -4,7 +4,7 @@ import {
   addDoc, updateDoc, deleteDoc, doc, serverTimestamp,
 } from 'firebase/firestore'
 import { db } from '../lib/firebase'
-import { generateTravelICS, downloadTravelICS } from '../lib/ical'
+import { downloadTravelICS } from '../lib/ical'
 import {
   normalizeLegs, normalizeAccommodations, legsForMember, accomsForMember,
   membersWithTravel, SOURCES,
@@ -76,19 +76,6 @@ function formatDate(dStr) {
 // in different zones, so subtracting the raw wall-clock strings is wrong.
 function durationLabel(from, to, fromTz, toTz) {
   return formatDuration(durationMinutes(from, fromTz, to, toTz))
-}
-
-function travelersLabel(item, currentUserId, members) {
-  const ids = item.traveler_ids || []
-  if (!ids.length) return null
-  if (ids.length === 1) {
-    const m = members.find(mm => mm.id === ids[0])
-    return m ? m.full_name.split(' ')[0] : '1 traveler'
-  }
-  const names = ids
-    .map(id => members.find(m => m.id === id)?.full_name?.split(' ')[0])
-    .filter(Boolean)
-  return names.slice(0, 3).join(', ') + (names.length > 3 ? ' +more' : '')
 }
 
 // ─── Traveler multi-picker ────────────────────────────────────────────────────

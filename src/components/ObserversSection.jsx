@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useReducer } from 'react'
 import {
   collection, query, where, getDocs, addDoc, deleteDoc, updateDoc, doc, getDoc, serverTimestamp,
 } from 'firebase/firestore'
@@ -22,29 +22,32 @@ export default function ObserversSection({
   const [msg, setMsg] = useState('')
   const [open, setOpen] = useState(false)
 
-  useEffect(() => { load() }, [tripId, currentUser?.id])
+  const [reloadVersion, reload] = useReducer(v => v + 1, 0)
 
-  async function load() {
-    if (!currentUser?.id) return
-    const snap = await getDocs(query(
-      collection(db, 'trip_observers'),
-      where('trip_id', '==', tripId),
-      where('added_by', '==', currentUser.id),   // BCC: only the ones I added
-    ))
-    const rows = await Promise.all(snap.docs.map(async d => {
-      const data = d.data()
-      const p = await getDoc(doc(db, 'profiles', data.user_id))
-      return {
-        docId: d.id,
-        user_id: data.user_id,
-        name: p.exists() ? (p.data().full_name || 'Unknown') : 'Unknown',
-        email: p.exists() ? p.data().email : '',
-        scope: data.scope || FULL_SCOPE,
-      }
-    }))
-    rows.sort((a, b) => a.name.localeCompare(b.name))
-    setObservers(rows)
-  }
+  useEffect(() => {
+    ;(async () => {
+      if (!currentUser?.id) return
+      const snap = await getDocs(query(
+        collection(db, 'trip_observers'),
+        where('trip_id', '==', tripId),
+        where('added_by', '==', currentUser.id),   // BCC: only the ones I added
+      ))
+      const rows = await Promise.all(snap.docs.map(async d => {
+        const data = d.data()
+        const p = await getDoc(doc(db, 'profiles', data.user_id))
+        return {
+          docId: d.id,
+          user_id: data.user_id,
+          name: p.exists() ? (p.data().full_name || 'Unknown') : 'Unknown',
+          email: p.exists() ? p.data().email : '',
+          scope: data.scope || FULL_SCOPE,
+        }
+      }))
+      rows.sort((a, b) => a.name.localeCompare(b.name))
+      setObservers(rows)
+    })()
+  }, [tripId, currentUser?.id, reloadVersion])
+
 
   // Add a resolved profile as an observer. Returns an error string, or '' on success.
   async function addProfile(profile) {
@@ -62,7 +65,7 @@ export default function ObserversSection({
   async function saveScope(docId, scope) {
     await updateDoc(doc(db, 'trip_observers', docId), { scope })
     setEditingId(null)
-    load()
+    reload()
   }
 
   async function addByEmail() {
@@ -75,18 +78,18 @@ export default function ObserversSection({
     const err = await addProfile(profile)
     setMsg(err || `${profile.full_name} can now view this trip.`)
     if (!err) setEmail('')
-    setBusy(false); load()
+    setBusy(false); reload()
   }
 
   async function addFriend(friend) {
     setBusy(true); setMsg('')
     const err = await addProfile({ id: friend.id, full_name: friend.full_name })
     setMsg(err || `${friend.full_name} can now view this trip.`)
-    setBusy(false); load()
+    setBusy(false); reload()
   }
 
   async function removeObserver(docId) {
-    await deleteDoc(doc(db, 'trip_observers', docId)); load()
+    await deleteDoc(doc(db, 'trip_observers', docId)); reload()
   }
 
   // Observer → traveller: drop the observer record and add a membership.
@@ -96,7 +99,7 @@ export default function ObserversSection({
       trip_id: tripId, user_id: o.user_id, role: 'member', created_at: serverTimestamp(),
     })
     setMsg(`${o.name} is now a traveller.`)
-    load(); onMembersChanged?.()
+    reload(); onMembersChanged?.()
   }
 
   const observerIds = new Set(observers.map(o => o.user_id))

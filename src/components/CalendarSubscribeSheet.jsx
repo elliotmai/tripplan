@@ -1,5 +1,5 @@
-import { useMemo, useState, useEffect } from 'react'
-import { useAuth } from '../contexts/AuthContext'
+import { useMemo, useState, useEffect, useReducer } from 'react'
+import { useAuth } from '../contexts/useAuth'
 import {
   getOrCreateFeedTokens, revokeFeedTokens, updateFeedFilter, DEFAULT_FEED_FILTER,
 } from '../lib/calendarTokens'
@@ -129,28 +129,31 @@ export default function CalendarSubscribeSheet({
     [members, allLegs, allAccoms]
   )
 
-  useEffect(() => { loadTokens() }, [trip.id])
+  const [reloadTokensVersion, reloadTokens] = useReducer(v => v + 1, 0)
 
-  async function loadTokens() {
-    setLoading(true)
-    try {
-      const result = await getOrCreateFeedTokens(trip.id, user.id)
-      setFeeds(result)
-      const stored = result.combined?.filter || result.travel?.filter || result.itinerary?.filter
-      if (stored) setFilter({ ...DEFAULT_FEED_FILTER, ...stored })
-      setFilterDirty(false)
-    } catch (e) {
-      console.error('Failed to create calendar tokens:', e)
-    }
-    setLoading(false)
-  }
+  useEffect(() => {
+    ;(async () => {
+      setLoading(true)
+      try {
+        const result = await getOrCreateFeedTokens(trip.id, user.id)
+        setFeeds(result)
+        const stored = result.combined?.filter || result.travel?.filter || result.itinerary?.filter
+        if (stored) setFilter({ ...DEFAULT_FEED_FILTER, ...stored })
+        setFilterDirty(false)
+      } catch (e) {
+        console.error('Failed to create calendar tokens:', e)
+      }
+      setLoading(false)
+    })()
+  }, [trip.id, user.id, reloadTokensVersion])
+
 
   async function handleRevoke() {
     setRevoking(true)
     await revokeFeedTokens(trip.id, user.id)
     setShowRevoke(false)
     setRevoking(false)
-    await loadTokens()
+    reloadTokens()
   }
 
   function updateFilter(patch) {

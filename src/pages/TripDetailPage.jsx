@@ -1,8 +1,8 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useMemo, useReducer } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import { doc, getDoc, collection, query, where, getDocs } from 'firebase/firestore'
 import { db } from '../lib/firebase'
-import { useAuth } from '../contexts/AuthContext'
+import { useAuth } from '../contexts/useAuth'
 import { ensureTripFriendships } from '../lib/friends'
 import { filterTravel, canSeeEvent } from '../lib/observerScope'
 import { format, parseISO, eachDayOfInterval } from 'date-fns'
@@ -47,84 +47,94 @@ export default function TripDetailPage() {
   const [showSubscribe, setShowSubscribe] = useState(false)
   const [pollUnreadCount, setPollUnreadCount] = useState(0)
 
-  useEffect(() => { loadTrip() }, [id])
-  useEffect(() => { if (user?.id && !isObserver) refreshPollUnread() }, [id, user?.id, isObserver])
+  const [reloadTripVersion, reloadTrip] = useReducer(v => v + 1, 0)
 
-  async function refreshPollUnread() {
-    if (!user?.id) return
-    const [pollSnap, voteSnap] = await Promise.all([
-      getDocs(query(collection(db, 'polls'), where('trip_id', '==', id))),
-      getDocs(query(collection(db, 'poll_votes'), where('trip_id', '==', id))),
-    ])
-    const myPollIds = new Set(
-      voteSnap.docs.filter(d => d.data().user_id === user.id).map(d => d.data().poll_id)
-    )
-    setPollUnreadCount(pollSnap.docs.filter(d => !myPollIds.has(d.id)).length)
-  }
-
-  async function loadTrip() {
-    setLoading(true)
-    const [tripSnap, memSnap, detailSnap, legsSnap, accomsSnap] = await Promise.all([
-      getDoc(doc(db, 'trips', id)),
-      getDocs(query(collection(db, 'trip_members'), where('trip_id', '==', id))),
-      getDocs(query(collection(db, 'travel_details'), where('trip_id', '==', id))),
-      getDocs(query(collection(db, 'trip_legs'), where('trip_id', '==', id))),
-      getDocs(query(collection(db, 'trip_accommodations'), where('trip_id', '==', id))),
-    ])
-    if (!tripSnap.exists()) { setLoading(false); return }
-    setTrip({ id: tripSnap.id, ...tripSnap.data() })
-    let travel = {
-      travelDetails: detailSnap.docs.map(d => ({ _docId: d.id, id: d.id, ...d.data() })),
-      sharedLegs: legsSnap.docs.map(d => ({ id: d.id, ...d.data() })),
-      sharedAccoms: accomsSnap.docs.map(d => ({ id: d.id, ...d.data() })),
-    }
-
-    const memberData = await Promise.all(
-      memSnap.docs.map(async d => {
-        const m = d.data()
-        const profileSnap = await getDoc(doc(db, 'profiles', m.user_id))
-        return profileSnap.exists()
-          ? { ...profileSnap.data(), id: m.user_id, role: m.role }
-          : { id: m.user_id, full_name: 'Unknown', role: m.role }
-      })
-    )
-    setMembers(memberData)
-
-    // Am I an observer here (viewing without travelling)? Used to show an
-    // "Observing" badge, keep the trip read-only for me, and narrow what I see
-    // to the scopes the travellers who added me chose.
-    let observing = false
-    if (user?.id && !memberData.some(m => m.id === user.id)) {
-      const obsSnap = await getDocs(query(
-        collection(db, 'trip_observers'),
-        where('trip_id', '==', id),
-        where('user_id', '==', user.id),
-      ))
-      observing = !obsSnap.empty
-      if (observing) {
-        const scopes = obsSnap.docs.map(d => d.data().scope)
-        setObserverScopes(scopes)
-        travel = filterTravel(travel, scopes)
+  useEffect(() => {
+    ;(async () => {
+      setLoading(true)
+      const [tripSnap, memSnap, detailSnap, legsSnap, accomsSnap] = await Promise.all([
+        getDoc(doc(db, 'trips', id)),
+        getDocs(query(collection(db, 'trip_members'), where('trip_id', '==', id))),
+        getDocs(query(collection(db, 'travel_details'), where('trip_id', '==', id))),
+        getDocs(query(collection(db, 'trip_legs'), where('trip_id', '==', id))),
+        getDocs(query(collection(db, 'trip_accommodations'), where('trip_id', '==', id))),
+      ])
+      if (!tripSnap.exists()) { setLoading(false); return }
+      setTrip({ id: tripSnap.id, ...tripSnap.data() })
+      let travel = {
+        travelDetails: detailSnap.docs.map(d => ({ _docId: d.id, id: d.id, ...d.data() })),
+        sharedLegs: legsSnap.docs.map(d => ({ id: d.id, ...d.data() })),
+        sharedAccoms: accomsSnap.docs.map(d => ({ id: d.id, ...d.data() })),
       }
-    }
-    setIsObserver(observing)
-    setTravelDetails(travel.travelDetails)
-    setSharedLegs(travel.sharedLegs)
-    setSharedAccoms(travel.sharedAccoms)
 
-    setLoading(false)
+      const memberData = await Promise.all(
+        memSnap.docs.map(async d => {
+          const m = d.data()
+          const profileSnap = await getDoc(doc(db, 'profiles', m.user_id))
+          return profileSnap.exists()
+            ? { ...profileSnap.data(), id: m.user_id, role: m.role }
+            : { id: m.user_id, full_name: 'Unknown', role: m.role }
+        })
+      )
+      setMembers(memberData)
 
-    // Auto-friend every trip mate (idempotent — only writes friendship docs that
-    // include the current user, so it stays inside the rules).
-    if (user?.id && memberData.length > 1) {
-      ensureTripFriendships(user.id, memberData.map(m => m.id), id).catch(() => { })
-    }
-  }
+      // Am I an observer here (viewing without travelling)? Used to show an
+      // "Observing" badge, keep the trip read-only for me, and narrow what I see
+      // to the scopes the travellers who added me chose.
+      let observing = false
+      if (user?.id && !memberData.some(m => m.id === user.id)) {
+        const obsSnap = await getDocs(query(
+          collection(db, 'trip_observers'),
+          where('trip_id', '==', id),
+          where('user_id', '==', user.id),
+        ))
+        observing = !obsSnap.empty
+        if (observing) {
+          const scopes = obsSnap.docs.map(d => d.data().scope)
+          setObserverScopes(scopes)
+          travel = filterTravel(travel, scopes)
+        }
+      }
+      setIsObserver(observing)
+      setTravelDetails(travel.travelDetails)
+      setSharedLegs(travel.sharedLegs)
+      setSharedAccoms(travel.sharedAccoms)
+
+      setLoading(false)
+
+      // Auto-friend every trip mate (idempotent — only writes friendship docs that
+      // include the current user, so it stays inside the rules).
+      if (user?.id && memberData.length > 1) {
+        ensureTripFriendships(user.id, memberData.map(m => m.id), id).catch(() => { })
+      }
+    })()
+  }, [id, user?.id, reloadTripVersion])
+  const [refreshPollUnreadVersion, refreshPollUnread] = useReducer(v => v + 1, 0)
+
+  useEffect(() => {
+    if (!user?.id || isObserver) return
+    ;(async () => {
+      if (!user?.id) return
+      const [pollSnap, voteSnap] = await Promise.all([
+        getDocs(query(collection(db, 'polls'), where('trip_id', '==', id))),
+        getDocs(query(collection(db, 'poll_votes'), where('trip_id', '==', id))),
+      ])
+      const myPollIds = new Set(
+        voteSnap.docs.filter(d => d.data().user_id === user.id).map(d => d.data().poll_id)
+      )
+      setPollUnreadCount(pollSnap.docs.filter(d => !myPollIds.has(d.id)).length)
+    })()
+  }, [id, user?.id, isObserver, refreshPollUnreadVersion])
+
+
 
   const isOwner = members.find(m => m.id === user?.id)?.role === 'owner'
   const isMember = members.some(m => m.id === user?.id)
   const visibleTabs = isObserver ? TABS.filter(t => OBSERVER_TABS.has(t.id)) : TABS
-  const eventFilter = isObserver ? e => canSeeEvent(observerScopes, e) : null
+  const eventFilter = useMemo(
+    () => isObserver ? e => canSeeEvent(observerScopes, e) : null,
+    [isObserver, observerScopes],
+  )
 
   const days = trip?.start_date && trip?.end_date
     ? eachDayOfInterval({ start: parseISO(trip.start_date), end: parseISO(trip.end_date) })
@@ -294,7 +304,7 @@ export default function TripDetailPage() {
             trip={trip}
             members={members}
             currentUser={user}
-            onTripUpdated={loadTrip}
+            onTripUpdated={reloadTrip}
             readOnly={isObserver}
           />
         )}
@@ -307,7 +317,7 @@ export default function TripDetailPage() {
             sharedLegs={sharedLegs}
             sharedAccoms={sharedAccoms}
             currentUser={user}
-            onUpdate={loadTrip}
+            onUpdate={reloadTrip}
             readOnly={isObserver}
           />
         )}
@@ -326,7 +336,7 @@ export default function TripDetailPage() {
           <PhotosTab tripId={id} readOnly={isObserver} />
         )}
         {activeTab === 'history' && !isObserver && (
-          <HistoryTab tripId={id} currentUser={user} readOnly={isObserver} onChanged={loadTrip} />
+          <HistoryTab tripId={id} currentUser={user} readOnly={isObserver} onChanged={reloadTrip} />
         )}
       </div>
 
@@ -337,7 +347,7 @@ export default function TripDetailPage() {
           isOwner={isOwner}
           currentUser={user}
           onClose={() => setShowEdit(false)}
-          onSaved={loadTrip}
+          onSaved={reloadTrip}
         />
       )}
 

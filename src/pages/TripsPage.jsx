@@ -1,8 +1,8 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useReducer } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { collection, query, where, getDocs, doc, getDoc } from 'firebase/firestore'
 import { db } from '../lib/firebase'
-import { useAuth } from '../contexts/AuthContext'
+import { useAuth } from '../contexts/useAuth'
 import { format, parseISO, differenceInDays } from 'date-fns'
 import { Plus, MapPin, Calendar, ChevronRight, ChevronDown, Eye } from 'lucide-react'
 import NewTripModal from '../components/NewTripModal'
@@ -16,41 +16,45 @@ export default function TripsPage() {
   const [showNew, setShowNew] = useState(false)
   const [showPast, setShowPast] = useState(false)
 
-  useEffect(() => { if (user?.id) loadTrips() }, [user?.id])
+  const [reloadTripsVersion, reloadTrips] = useReducer(v => v + 1, 0)
 
-  async function loadTrips() {
-    setLoading(true)
-    const memSnap = await getDocs(
-      query(collection(db, 'trip_members'), where('user_id', '==', user.id))
-    )
-    const tripIds = memSnap.docs.map(d => d.data().trip_id)
+  useEffect(() => {
+    if (!user?.id) return
+    ;(async () => {
+      setLoading(true)
+      const memSnap = await getDocs(
+        query(collection(db, 'trip_members'), where('user_id', '==', user.id))
+      )
+      const tripIds = memSnap.docs.map(d => d.data().trip_id)
 
-    // Fetch each trip doc (Firestore 'in' supports up to 30 items). No early
-    // return when the list is empty: someone who only observes trips has no
-    // memberships but still needs the observed query below to run.
-    const chunks = []
-    for (let i = 0; i < tripIds.length; i += 30) chunks.push(tripIds.slice(i, i + 30))
-    const tripDocs = []
-    for (const chunk of chunks) {
-      const snaps = await Promise.all(chunk.map(id => getDoc(doc(db, 'trips', id))))
-      snaps.forEach(s => s.exists() && tripDocs.push({ id: s.id, ...s.data() }))
-    }
+      // Fetch each trip doc (Firestore 'in' supports up to 30 items). No early
+      // return when the list is empty: someone who only observes trips has no
+      // memberships but still needs the observed query below to run.
+      const chunks = []
+      for (let i = 0; i < tripIds.length; i += 30) chunks.push(tripIds.slice(i, i + 30))
+      const tripDocs = []
+      for (const chunk of chunks) {
+        const snaps = await Promise.all(chunk.map(id => getDoc(doc(db, 'trips', id))))
+        snaps.forEach(s => s.exists() && tripDocs.push({ id: s.id, ...s.data() }))
+      }
 
-    // Trips this user observes (BCC viewer) — listed alongside their own trips,
-    // flagged so the card can show an "Observer" pill.
-    const obsSnap = await getDocs(
-      query(collection(db, 'trip_observers'), where('user_id', '==', user.id))
-    )
-    const obsIds = [...new Set(obsSnap.docs.map(d => d.data().trip_id))]
-      .filter(id => !tripIds.includes(id)) // don't double-list trips you're also on
-    for (let i = 0; i < obsIds.length; i += 30) {
-      const snaps = await Promise.all(obsIds.slice(i, i + 30).map(id => getDoc(doc(db, 'trips', id))))
-      snaps.forEach(s => s.exists() && tripDocs.push({ id: s.id, ...s.data(), observing: true }))
-    }
+      // Trips this user observes (BCC viewer) — listed alongside their own trips,
+      // flagged so the card can show an "Observer" pill.
+      const obsSnap = await getDocs(
+        query(collection(db, 'trip_observers'), where('user_id', '==', user.id))
+      )
+      const obsIds = [...new Set(obsSnap.docs.map(d => d.data().trip_id))]
+        .filter(id => !tripIds.includes(id)) // don't double-list trips you're also on
+      for (let i = 0; i < obsIds.length; i += 30) {
+        const snaps = await Promise.all(obsIds.slice(i, i + 30).map(id => getDoc(doc(db, 'trips', id))))
+        snaps.forEach(s => s.exists() && tripDocs.push({ id: s.id, ...s.data(), observing: true }))
+      }
 
-    setTrips(tripDocs)
-    setLoading(false)
-  }
+      setTrips(tripDocs)
+      setLoading(false)
+    })()
+  }, [user?.id, reloadTripsVersion])
+
 
   const today = new Date().toISOString().slice(0, 10)
   const upcoming = trips
@@ -134,7 +138,7 @@ export default function TripsPage() {
       </div>
 
       <BottomNav active="trips" />
-      {showNew && <NewTripModal onClose={() => setShowNew(false)} onCreated={loadTrips} />}
+      {showNew && <NewTripModal onClose={() => setShowNew(false)} onCreated={reloadTrips} />}
     </div>
   )
 }

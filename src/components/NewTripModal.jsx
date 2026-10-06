@@ -1,7 +1,7 @@
 import { useState, useRef } from 'react'
 import { collection, addDoc, serverTimestamp } from 'firebase/firestore'
 import { db } from '../lib/firebase'
-import { useAuth } from '../contexts/AuthContext'
+import { useAuth } from '../contexts/useAuth'
 import { geocodeCity } from '../lib/weather'
 import { X, Smile } from 'lucide-react'
 import TimezonePicker from './TimezonePicker'

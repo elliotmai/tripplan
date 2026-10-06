@@ -1,10 +1,10 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useReducer } from 'react'
 import {
   collection, query, where, getDocs, addDoc, updateDoc, deleteDoc, doc,
   serverTimestamp,
 } from 'firebase/firestore'
 import { db } from '../lib/firebase'
-import { useAuth } from '../contexts/AuthContext'
+import { useAuth } from '../contexts/useAuth'
 import { Plus, ExternalLink, Trash2, Pencil, X, Check } from 'lucide-react'
 
 const ALBUM_SERVICES = [
@@ -27,14 +27,17 @@ export default function PhotosTab({ tripId }) {
   const [editForm, setEditForm]   = useState(BLANK_FORM)
   const [saving, setSaving]     = useState(false)
 
-  useEffect(() => { loadAlbums() }, [tripId])
+  const [reloadAlbumsVersion, reloadAlbums] = useReducer(v => v + 1, 0)
 
-  async function loadAlbums() {
-    const snap = await getDocs(query(collection(db, 'photo_albums'), where('trip_id', '==', tripId)))
-    const list = snap.docs.map(d => ({ id: d.id, ...d.data() }))
-    list.sort((a,b) => (b.created_at?.seconds||0)-(a.created_at?.seconds||0))
-    setAlbums(list)
-  }
+  useEffect(() => {
+    ;(async () => {
+      const snap = await getDocs(query(collection(db, 'photo_albums'), where('trip_id', '==', tripId)))
+      const list = snap.docs.map(d => ({ id: d.id, ...d.data() }))
+      list.sort((a,b) => (b.created_at?.seconds||0)-(a.created_at?.seconds||0))
+      setAlbums(list)
+    })()
+  }, [tripId, reloadAlbumsVersion])
+
 
   async function addAlbum() {
     if (!form.url.trim()) return
@@ -43,7 +46,7 @@ export default function PhotosTab({ tripId }) {
       trip_id: tripId, title: form.title || 'Untitled Album',
       url: form.url, description: form.description, added_by: user.id, created_at: serverTimestamp(),
     })
-    setForm(BLANK_FORM); setShowForm(false); setSaving(false); loadAlbums()
+    setForm(BLANK_FORM); setShowForm(false); setSaving(false); reloadAlbums()
   }
 
   async function saveEdit(id) {
@@ -55,11 +58,11 @@ export default function PhotosTab({ tripId }) {
       description: editForm.description,
       updated_at: serverTimestamp(),
     })
-    setEditingId(null); setEditForm(BLANK_FORM); setSaving(false); loadAlbums()
+    setEditingId(null); setEditForm(BLANK_FORM); setSaving(false); reloadAlbums()
   }
 
   async function deleteAlbum(id) {
-    await deleteDoc(doc(db, 'photo_albums', id)); loadAlbums()
+    await deleteDoc(doc(db, 'photo_albums', id)); reloadAlbums()
   }
 
   function startEdit(album) {

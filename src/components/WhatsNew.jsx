@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react'
 import { WHATS_NEW } from '../config/whatsNew'
-import { useAuth } from '../contexts/AuthContext'
+import { useAuth } from '../contexts/useAuth'
 
 const STORAGE_KEY = 'tripplan.whatsNewSeen'
 

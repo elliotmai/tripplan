@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useReducer } from 'react'
 import { collection, query, where, getDocs } from 'firebase/firestore'
 import { db } from '../lib/firebase'
 import { undoActivity } from '../lib/activity'
@@ -31,20 +31,23 @@ export default function HistoryTab({ tripId, readOnly = false, onChanged }) {
   const [expanded, setExpanded] = useState(null)
   const [undoing, setUndoing] = useState(null)
 
-  useEffect(() => { load() }, [tripId])
+  const [version, reload] = useReducer(v => v + 1, 0)
 
-  async function load() {
-    const snap = await getDocs(query(collection(db, 'trip_activity'), where('trip_id', '==', tripId)))
-    const list = snap.docs.map(d => ({ id: d.id, ...d.data() }))
-    list.sort((a, b) => (b.created_at?.seconds || 0) - (a.created_at?.seconds || 0))
-    setEntries(list)
-  }
+  useEffect(() => {
+    let cancelled = false
+    getDocs(query(collection(db, 'trip_activity'), where('trip_id', '==', tripId))).then(snap => {
+      const list = snap.docs.map(d => ({ id: d.id, ...d.data() }))
+      list.sort((a, b) => (b.created_at?.seconds || 0) - (a.created_at?.seconds || 0))
+      if (!cancelled) setEntries(list)
+    })
+    return () => { cancelled = true }
+  }, [tripId, version])
 
   async function handleUndo(entry) {
     setUndoing(entry.id)
     try {
       await undoActivity(entry)
-      await load()
+      reload()
       onChanged?.()
     } catch (e) {
       console.warn('undo failed', e)

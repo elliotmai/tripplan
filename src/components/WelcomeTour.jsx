@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { useAuth } from '../contexts/AuthContext'
+import { useAuth } from '../contexts/useAuth'
 
 // A short, swipe-through tour of the main features, shown once to brand-new
 // accounts. signUp() writes `intro_seen: false` on the profile; finishing or

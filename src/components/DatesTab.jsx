@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, useRef } from 'react'
+import { useEffect, useMemo, useState, useRef, useReducer } from 'react'
 import {
   collection, query, where, getDocs, addDoc, deleteDoc, updateDoc,
   doc, serverTimestamp,
@@ -76,33 +76,36 @@ export default function DatesTab({ tripId, trip, members, currentUser, onTripUpd
   const writeLock = useRef(Promise.resolve())
   const availRef = useRef([])
 
-  useEffect(() => { load() }, [tripId])
+  const [reloadVersion, reload] = useReducer(v => v + 1, 0)
 
-  async function load() {
-    setLoading(true)
-    const pollSnap = await getDocs(
-      query(collection(db, 'date_polls'), where('trip_id', '==', tripId))
-    )
-    if (pollSnap.empty) {
-      setPoll(null); setAvailability([]); setLoading(false); return
-    }
-    // Latest poll wins (one trip can only have one active in this UI).
-    const polls = pollSnap.docs
-      .map(d => ({ id: d.id, ...d.data() }))
-      .sort((a, b) => (b.created_at?.seconds || 0) - (a.created_at?.seconds || 0))
-    const latest = polls[0]
-    setPoll(latest)
+  useEffect(() => {
+    ;(async () => {
+      setLoading(true)
+      const pollSnap = await getDocs(
+        query(collection(db, 'date_polls'), where('trip_id', '==', tripId))
+      )
+      if (pollSnap.empty) {
+        setPoll(null); setAvailability([]); setLoading(false); return
+      }
+      // Latest poll wins (one trip can only have one active in this UI).
+      const polls = pollSnap.docs
+        .map(d => ({ id: d.id, ...d.data() }))
+        .sort((a, b) => (b.created_at?.seconds || 0) - (a.created_at?.seconds || 0))
+      const latest = polls[0]
+      setPoll(latest)
 
-    const availSnap = await getDocs(
-      query(collection(db, 'date_availability'), where('poll_id', '==', latest.id))
-    )
-    const rows = availSnap.docs.map(d => ({ id: d.id, ...d.data() }))
-    const mineDoc = rows.find(a => a.user_id === currentUser?.id)
-    myDocIdRef.current = mineDoc ? mineDoc.id : null
-    availRef.current = rows
-    setAvailability(rows)
-    setLoading(false)
-  }
+      const availSnap = await getDocs(
+        query(collection(db, 'date_availability'), where('poll_id', '==', latest.id))
+      )
+      const rows = availSnap.docs.map(d => ({ id: d.id, ...d.data() }))
+      const mineDoc = rows.find(a => a.user_id === currentUser?.id)
+      myDocIdRef.current = mineDoc ? mineDoc.id : null
+      availRef.current = rows
+      setAvailability(rows)
+      setLoading(false)
+    })()
+  }, [tripId, currentUser?.id, reloadVersion])
+
 
   // ── derived ────────────────────────────────────────────────────────────────
 
@@ -151,7 +154,7 @@ export default function DatesTab({ tripId, trip, members, currentUser, onTripUpd
       created_at: serverTimestamp(),
     })
     setShowCreate(false)
-    await load()
+    reload()
     setSaving(false)
   }
 
@@ -214,7 +217,7 @@ export default function DatesTab({ tripId, trip, members, currentUser, onTripUpd
     const id = myDocIdRef.current
     myDocIdRef.current = null
     await deleteDoc(doc(db, 'date_availability', id))
-    await load()
+    reload()
   }
 
   async function applyLock() {

@@ -3,7 +3,7 @@ import { useNavigate } from 'react-router-dom'
 import { collection, query, where, onSnapshot } from 'firebase/firestore'
 import { Compass, User, Users, Plane } from 'lucide-react'
 import { db } from '../lib/firebase'
-import { useAuth } from '../contexts/AuthContext'
+import { useAuth } from '../contexts/useAuth'
 import { FRIENDSHIP_STATUS } from '../lib/friends'
 
 export default function BottomNav({ active }) {

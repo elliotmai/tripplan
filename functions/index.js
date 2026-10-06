@@ -11,7 +11,6 @@ initializeApp()
 // ─── ICS helpers — timezone-aware ────────────────────────────────────────────
 
 function pad(n) { return String(n).padStart(2, '0') }
-function makeUID() { return `${Date.now()}-${Math.random().toString(36).slice(2)}@wander` }
 
 function escapeICS(str) {
   if (!str) return ''

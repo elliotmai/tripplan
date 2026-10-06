@@ -83,22 +83,6 @@ function isoLocalToTZ(isoLocal, tzId) {
   }
 }
 
-function formatDTReadable(isoLocal, tzId) {
-  if (!isoLocal) return ''
-  try {
-    const date = new Date(isoLocal)
-    return date.toLocaleString('en-US', {
-      timeZone:        tzId || undefined,
-      month:           'short',
-      day:             'numeric',
-      year:            'numeric',
-      hour:            '2-digit',
-      minute:          '2-digit',
-      timeZoneName:    'short',
-    })
-  } catch { return isoLocal }
-}
-
 function icsHeader(calName, timezone) {
   const lines = [
     'BEGIN:VCALENDAR',
@@ -210,7 +194,7 @@ function eventLines(event, tripTimezone) {
 
   if (event.time) {
     // Timed event
-    const { prop, dtendProp, value } = toTZDateTime(event.date, event.time, tz)
+    const { value } = toTZDateTime(event.date, event.time, tz)
     lines.push(`DTSTART;TZID=${tz}:${value}`)
 
     if (event.end_time) {

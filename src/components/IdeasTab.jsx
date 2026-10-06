@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useReducer } from 'react'
 import {
   collection, query, where, getDocs, addDoc, updateDoc, deleteDoc, doc,
   serverTimestamp, arrayUnion, arrayRemove,
@@ -79,27 +79,49 @@ export default function IdeasTab({
   const nameOf = id =>
     members.find(m => m.id === id)?.full_name?.split(' ')[0] || 'Someone'
 
-  useEffect(() => { load(); loadPolls() }, [tripId])
+  const [reloadIdeasVersion, reloadIdeas] = useReducer(v => v + 1, 0)
+
+  useEffect(() => {
+    ;(async () => {
+      const [ideaSnap, commentSnap] = await Promise.all([
+        getDocs(query(collection(db, 'brainstorm_ideas'),    where('trip_id', '==', tripId))),
+        getDocs(query(collection(db, 'brainstorm_comments'), where('trip_id', '==', tripId))),
+      ])
+      const list = ideaSnap.docs.map(d => ({ id: d.id, ...d.data() }))
+      list.sort((a, b) =>
+        (b.liked_by?.length || 0) - (a.liked_by?.length || 0) ||
+        (b.created_at?.seconds || 0) - (a.created_at?.seconds || 0)
+      )
+      const byIdea = {}
+      commentSnap.docs
+        .map(d => ({ id: d.id, ...d.data() }))
+        .sort((a, b) => (a.created_at?.seconds || 0) - (b.created_at?.seconds || 0))
+        .forEach(c => { (byIdea[c.idea_id] ||= []).push(c) })
+      setIdeas(list)
+      setComments(byIdea)
+    })()
+  }, [tripId, reloadIdeasVersion])
+
+  const [reloadPollsVersion, reloadPolls] = useReducer(v => v + 1, 0)
+
+  useEffect(() => {
+    ;(async () => {
+      const [pollSnap, voteSnap] = await Promise.all([
+        getDocs(query(collection(db, 'polls'), where('trip_id', '==', tripId))),
+        getDocs(query(collection(db, 'poll_votes'), where('trip_id', '==', tripId))),
+      ])
+      const pollList = pollSnap.docs.map(d => ({ id: d.id, ...d.data() }))
+      const withOptions = await Promise.all(pollList.map(async poll => {
+        const optSnap = await getDocs(query(collection(db, 'poll_options'), where('poll_id', '==', poll.id)))
+        return { ...poll, poll_options: optSnap.docs.map(d => ({ id: d.id, ...d.data() })) }
+      }))
+      withOptions.sort((a, b) => (b.created_at?.seconds || 0) - (a.created_at?.seconds || 0))
+      setPolls(withOptions)
+      setVotes(voteSnap.docs.map(d => ({ id: d.id, ...d.data() })))
+    })()
+  }, [tripId, reloadPollsVersion])
 
   // ── Ideas data ────────────────────────────────────────────────────────────
-  async function load() {
-    const [ideaSnap, commentSnap] = await Promise.all([
-      getDocs(query(collection(db, 'brainstorm_ideas'),    where('trip_id', '==', tripId))),
-      getDocs(query(collection(db, 'brainstorm_comments'), where('trip_id', '==', tripId))),
-    ])
-    const list = ideaSnap.docs.map(d => ({ id: d.id, ...d.data() }))
-    list.sort((a, b) =>
-      (b.liked_by?.length || 0) - (a.liked_by?.length || 0) ||
-      (b.created_at?.seconds || 0) - (a.created_at?.seconds || 0)
-    )
-    const byIdea = {}
-    commentSnap.docs
-      .map(d => ({ id: d.id, ...d.data() }))
-      .sort((a, b) => (a.created_at?.seconds || 0) - (b.created_at?.seconds || 0))
-      .forEach(c => { (byIdea[c.idea_id] ||= []).push(c) })
-    setIdeas(list)
-    setComments(byIdea)
-  }
 
   async function addIdea() {
     if (!form.title.trim()) return
@@ -124,7 +146,7 @@ export default function IdeasTab({
       details: fieldSummaryLines(payload, IDEA_FIELDS),
       undo: { ops: [{ op: 'delete', collection: 'brainstorm_ideas', docId: ref.id }] },
     })
-    setForm(BLANK); setShowForm(false); setSaving(false); load()
+    setForm(BLANK); setShowForm(false); setSaving(false); reloadIdeas()
   }
 
   function startEdit(idea) {
@@ -167,7 +189,7 @@ export default function IdeasTab({
         undo: { ops: [{ op: 'update', collection: 'brainstorm_ideas', docId: editingId, data: prev }] },
       })
     }
-    setEditingId(null); setSaving(false); load()
+    setEditingId(null); setSaving(false); reloadIdeas()
   }
 
   async function toggleLike(idea) {
@@ -207,7 +229,7 @@ export default function IdeasTab({
       ],
       undo: ops.length ? { ops } : null,
     })
-    load()
+    reloadIdeas()
   }
 
   // Archiving tucks an idea away without losing its votes or comments. Any
@@ -219,7 +241,7 @@ export default function IdeasTab({
       summary: `${archived ? 'Archived' : 'Restored'} the idea “${idea.title}”`,
       undo: { ops: [{ op: 'update', collection: 'brainstorm_ideas', docId: idea.id, data: { archived: !archived } }] },
     })
-    load()
+    reloadIdeas()
   }
 
   async function addToTrip(idea, date, time) {
@@ -256,28 +278,14 @@ export default function IdeasTab({
       trip_id: tripId, idea_id: ideaId, text: text.trim(),
       created_by: currentUser.id, created_at: serverTimestamp(),
     })
-    load()
+    reloadIdeas()
   }
 
   async function deleteComment(id) {
-    await deleteDoc(doc(db, 'brainstorm_comments', id)); load()
+    await deleteDoc(doc(db, 'brainstorm_comments', id)); reloadIdeas()
   }
 
   // ── Polls data ────────────────────────────────────────────────────────────
-  async function loadPolls() {
-    const [pollSnap, voteSnap] = await Promise.all([
-      getDocs(query(collection(db, 'polls'), where('trip_id', '==', tripId))),
-      getDocs(query(collection(db, 'poll_votes'), where('trip_id', '==', tripId))),
-    ])
-    const pollList = pollSnap.docs.map(d => ({ id: d.id, ...d.data() }))
-    const withOptions = await Promise.all(pollList.map(async poll => {
-      const optSnap = await getDocs(query(collection(db, 'poll_options'), where('poll_id', '==', poll.id)))
-      return { ...poll, poll_options: optSnap.docs.map(d => ({ id: d.id, ...d.data() })) }
-    }))
-    withOptions.sort((a, b) => (b.created_at?.seconds || 0) - (a.created_at?.seconds || 0))
-    setPolls(withOptions)
-    setVotes(voteSnap.docs.map(d => ({ id: d.id, ...d.data() })))
-  }
 
   // Create a poll out of chosen ideas (and/or free-text options).
   async function createPoll({ question, options, day }) {
@@ -311,7 +319,7 @@ export default function IdeasTab({
       },
     })
     setShowPollForm(false); setSaving(false)
-    loadPolls(); onPollsChanged?.()
+    reloadPolls(); onPollsChanged?.()
   }
 
   async function vote(pollId, optionId) {
@@ -321,7 +329,7 @@ export default function IdeasTab({
       poll_id: pollId, option_id: optionId, user_id: currentUser.id,
       trip_id: tripId, created_at: serverTimestamp(),
     })
-    loadPolls(); onPollsChanged?.()
+    reloadPolls(); onPollsChanged?.()
   }
 
   // Apply an edit from PollForm. Options keep their ids when renamed so their
@@ -377,7 +385,7 @@ export default function IdeasTab({
       })
     }
     setEditingPollId(null); setSaving(false)
-    loadPolls(); onPollsChanged?.()
+    reloadPolls(); onPollsChanged?.()
   }
 
   async function deletePoll(poll) {
@@ -411,7 +419,7 @@ export default function IdeasTab({
       ],
       undo: { ops },
     })
-    loadPolls(); onPollsChanged?.()
+    reloadPolls(); onPollsChanged?.()
   }
 
   return (

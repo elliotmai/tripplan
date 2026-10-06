@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useReducer } from 'react'
 import {
   collection, query, where, getDocs,
   addDoc, updateDoc, deleteDoc, doc, serverTimestamp
@@ -7,7 +7,7 @@ import { db } from '../lib/firebase'
 import { logActivity, fieldDiff, fieldSummaryLines } from '../lib/activity'
 import { fetchWeatherForTrip } from '../lib/weather'
 import { openInMaps } from '../lib/maps'
-import { useAuth } from '../contexts/AuthContext'
+import { useAuth } from '../contexts/useAuth'
 import { formatTemp, isHour12, formatClock } from '../lib/format'
 import { downloadICS, downloadCombinedICS } from '../lib/ical'
 import { normalizeLegs, normalizeAccommodations } from '../lib/travel'
@@ -102,7 +102,7 @@ function parseAssigned(raw, allMemberIds) {
 }
 
 // Convert form state back to what we store in Firestore
-function serializeAssigned(assignAll, assignees, allMemberIds) {
+function serializeAssigned(assignAll, assignees) {
   if (assignAll) return ['__all__']
   if (assignees.length === 0) return []
   return assignees
@@ -830,29 +830,33 @@ export default function ItineraryTab({
     }
   }
 
+  const [reloadEventsVersion, reloadEvents] = useReducer(v => v + 1, 0)
+
   useEffect(() => {
-    loadEvents()
     if (trip.lat && trip.lon && trip.start_date && trip.end_date) {
       fetchWeatherForTrip(trip.lat, trip.lon, trip.start_date, trip.end_date).then(w => setWeather(w || []))
     }
-  }, [tripId])
+  }, [trip.lat, trip.lon, trip.start_date, trip.end_date])
 
-  async function loadEvents() {
-    const snap = await getDocs(query(
-      collection(db, 'itinerary_events'),
-      where('trip_id', '==', tripId)
-    ))
-    let items = snap.docs.map(d => ({ id: d.id, ...d.data() }))
-    if (eventFilter) items = items.filter(eventFilter)
-    items.sort((a, b) => {
-      const dateCmp = (a.date || '').localeCompare(b.date || '')
-      if (dateCmp !== 0) return dateCmp
-      if (a.time && !b.time) return -1
-      if (!a.time && b.time) return 1
-      return (a.time || '').localeCompare(b.time || '')
-    })
-    setEvents(items)
-  }
+  useEffect(() => {
+    ;(async () => {
+      const snap = await getDocs(query(
+        collection(db, 'itinerary_events'),
+        where('trip_id', '==', tripId)
+      ))
+      let items = snap.docs.map(d => ({ id: d.id, ...d.data() }))
+      if (eventFilter) items = items.filter(eventFilter)
+      items.sort((a, b) => {
+        const dateCmp = (a.date || '').localeCompare(b.date || '')
+        if (dateCmp !== 0) return dateCmp
+        if (a.time && !b.time) return -1
+        if (!a.time && b.time) return 1
+        return (a.time || '').localeCompare(b.time || '')
+      })
+      setEvents(items)
+    })()
+  }, [tripId, eventFilter, reloadEventsVersion])
+
 
   async function addEvent(date) {
     if (!addForm.title.trim()) return
@@ -866,7 +870,7 @@ export default function ItineraryTab({
       location: addForm.location || null,
       notes: addForm.notes || null,
       type: addForm.type,
-      assigned_to: serializeAssigned(addForm.assignAll, addForm.assignees, allMemberIds),
+      assigned_to: serializeAssigned(addForm.assignAll, addForm.assignees),
       timezone: addForm.timezone || trip.timezone || localTimezone() || null,
       created_by: currentUser.id,
       created_at: serverTimestamp(),
@@ -881,7 +885,7 @@ export default function ItineraryTab({
     setAddForm({ ...BLANK_FORM, timezone: trip.timezone || '' })
     setShowAddForm(null)
     setSaving(false)
-    loadEvents()
+    reloadEvents()
   }
 
   async function saveEdit(id) {
@@ -895,7 +899,7 @@ export default function ItineraryTab({
       location: editForm.location || null,
       notes: editForm.notes || null,
       type: editForm.type,
-      assigned_to: serializeAssigned(editForm.assignAll, editForm.assignees, allMemberIds),
+      assigned_to: serializeAssigned(editForm.assignAll, editForm.assignees),
     }
     await updateDoc(doc(db, 'itinerary_events', id), {
       ...after,
@@ -913,7 +917,7 @@ export default function ItineraryTab({
     }
     setSaving(false)
     setEditingId(null)
-    loadEvents()
+    reloadEvents()
   }
 
   async function deleteEvent(id) {
@@ -929,7 +933,7 @@ export default function ItineraryTab({
       })
     }
     if (editingId === id) setEditingId(null)
-    loadEvents()
+    reloadEvents()
   }
 
   function startEdit(event) {

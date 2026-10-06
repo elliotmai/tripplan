@@ -4,6 +4,7 @@ import { doc, getDoc, collection, query, where, getDocs } from 'firebase/firesto
 import { db } from '../lib/firebase'
 import { useAuth } from '../contexts/AuthContext'
 import { ensureTripFriendships } from '../lib/friends'
+import { filterTravel, canSeeEvent } from '../lib/observerScope'
 import { format, parseISO, eachDayOfInterval } from 'date-fns'
 import { ArrowLeft, Pencil, MapPin, Calendar, Users, CalendarDays, Eye } from 'lucide-react'
 import ItineraryTab from '../components/ItineraryTab'
@@ -24,6 +25,10 @@ const TABS = [
   { id: 'history', label: 'History' },
 ]
 
+// Observers only get the trip's plan, never the group's polls, ideas, photos
+// or change log.
+const OBSERVER_TABS = new Set(['itinerary', 'travelers'])
+
 export default function TripDetailPage() {
   const { id } = useParams()
   const { user } = useAuth()
@@ -32,6 +37,7 @@ export default function TripDetailPage() {
   const [trip, setTrip] = useState(null)
   const [members, setMembers] = useState([])
   const [isObserver, setIsObserver] = useState(false)
+  const [observerScopes, setObserverScopes] = useState([])   // one per traveller who added me
   const [travelDetails, setTravelDetails] = useState([])
   const [sharedLegs, setSharedLegs] = useState([])
   const [sharedAccoms, setSharedAccoms] = useState([])
@@ -42,7 +48,7 @@ export default function TripDetailPage() {
   const [pollUnreadCount, setPollUnreadCount] = useState(0)
 
   useEffect(() => { loadTrip() }, [id])
-  useEffect(() => { if (user?.id) refreshPollUnread() }, [id, user?.id])
+  useEffect(() => { if (user?.id && !isObserver) refreshPollUnread() }, [id, user?.id, isObserver])
 
   async function refreshPollUnread() {
     if (!user?.id) return
@@ -67,9 +73,11 @@ export default function TripDetailPage() {
     ])
     if (!tripSnap.exists()) { setLoading(false); return }
     setTrip({ id: tripSnap.id, ...tripSnap.data() })
-    setTravelDetails(detailSnap.docs.map(d => ({ _docId: d.id, id: d.id, ...d.data() })))
-    setSharedLegs(legsSnap.docs.map(d => ({ id: d.id, ...d.data() })))
-    setSharedAccoms(accomsSnap.docs.map(d => ({ id: d.id, ...d.data() })))
+    let travel = {
+      travelDetails: detailSnap.docs.map(d => ({ _docId: d.id, id: d.id, ...d.data() })),
+      sharedLegs: legsSnap.docs.map(d => ({ id: d.id, ...d.data() })),
+      sharedAccoms: accomsSnap.docs.map(d => ({ id: d.id, ...d.data() })),
+    }
 
     const memberData = await Promise.all(
       memSnap.docs.map(async d => {
@@ -83,20 +91,26 @@ export default function TripDetailPage() {
     setMembers(memberData)
 
     // Am I an observer here (viewing without travelling)? Used to show an
-    // "Observing" badge and keep the trip read-only for me.
-    if (user?.id) {
-      const iAmMember = memberData.some(m => m.id === user.id)
-      if (iAmMember) {
-        setIsObserver(false)
-      } else {
-        const obsSnap = await getDocs(query(
-          collection(db, 'trip_observers'),
-          where('trip_id', '==', id),
-          where('user_id', '==', user.id),
-        ))
-        setIsObserver(!obsSnap.empty)
+    // "Observing" badge, keep the trip read-only for me, and narrow what I see
+    // to the scopes the travellers who added me chose.
+    let observing = false
+    if (user?.id && !memberData.some(m => m.id === user.id)) {
+      const obsSnap = await getDocs(query(
+        collection(db, 'trip_observers'),
+        where('trip_id', '==', id),
+        where('user_id', '==', user.id),
+      ))
+      observing = !obsSnap.empty
+      if (observing) {
+        const scopes = obsSnap.docs.map(d => d.data().scope)
+        setObserverScopes(scopes)
+        travel = filterTravel(travel, scopes)
       }
     }
+    setIsObserver(observing)
+    setTravelDetails(travel.travelDetails)
+    setSharedLegs(travel.sharedLegs)
+    setSharedAccoms(travel.sharedAccoms)
 
     setLoading(false)
 
@@ -109,6 +123,8 @@ export default function TripDetailPage() {
 
   const isOwner = members.find(m => m.id === user?.id)?.role === 'owner'
   const isMember = members.some(m => m.id === user?.id)
+  const visibleTabs = isObserver ? TABS.filter(t => OBSERVER_TABS.has(t.id)) : TABS
+  const eventFilter = isObserver ? e => canSeeEvent(observerScopes, e) : null
 
   const days = trip?.start_date && trip?.end_date
     ? eachDayOfInterval({ start: parseISO(trip.start_date), end: parseISO(trip.end_date) })
@@ -224,7 +240,7 @@ export default function TripDetailPage() {
           borderBottom: '1px solid rgba(212,184,122,0.08)',
         }}>
         <div className="flex gap-1">
-          {TABS.map(tab => {
+          {visibleTabs.map(tab => {
             const showPollBadge = tab.id === 'ideas' && pollUnreadCount > 0
             return (
               <button
@@ -269,9 +285,10 @@ export default function TripDetailPage() {
             sharedAccoms={sharedAccoms}
             currentUser={user}
             readOnly={isObserver}
+            eventFilter={eventFilter}
           />
         )}
-        {activeTab === 'dates' && (
+        {activeTab === 'dates' && !isObserver && (
           <DatesTab
             tripId={id}
             trip={trip}
@@ -294,7 +311,7 @@ export default function TripDetailPage() {
             readOnly={isObserver}
           />
         )}
-        {activeTab === 'ideas' && (
+        {activeTab === 'ideas' && !isObserver && (
           <IdeasTab
             tripId={id}
             trip={trip}
@@ -305,10 +322,10 @@ export default function TripDetailPage() {
             onPollsChanged={refreshPollUnread}
           />
         )}
-        {activeTab === 'photos' && (
+        {activeTab === 'photos' && !isObserver && (
           <PhotosTab tripId={id} readOnly={isObserver} />
         )}
-        {activeTab === 'history' && (
+        {activeTab === 'history' && !isObserver && (
           <HistoryTab tripId={id} currentUser={user} readOnly={isObserver} onChanged={loadTrip} />
         )}
       </div>

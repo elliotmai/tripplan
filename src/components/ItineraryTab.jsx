@@ -737,7 +737,7 @@ function ExportModal({ events, members, allLegs, allAccoms, trip, scope, onClose
 export default function ItineraryTab({
   tripId, trip, days, members,
   travelDetails = [], sharedLegs = [], sharedAccoms = [],
-  currentUser, readOnly = false,
+  currentUser, readOnly = false, eventFilter = null,
 }) {
   const [events, setEvents] = useState([])
   const [weather, setWeather] = useState([])
@@ -842,7 +842,8 @@ export default function ItineraryTab({
       collection(db, 'itinerary_events'),
       where('trip_id', '==', tripId)
     ))
-    const items = snap.docs.map(d => ({ id: d.id, ...d.data() }))
+    let items = snap.docs.map(d => ({ id: d.id, ...d.data() }))
+    if (eventFilter) items = items.filter(eventFilter)
     items.sort((a, b) => {
       const dateCmp = (a.date || '').localeCompare(b.date || '')
       if (dateCmp !== 0) return dateCmp

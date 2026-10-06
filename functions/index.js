@@ -513,6 +513,70 @@ function filterEvents(events, filter, ownerId) {
   })
 }
 
+// ─── Observer scopes ──────────────────────────────────────────────────────────
+// Mirrors src/lib/observerScope.js — keep the two in step. An observer who
+// subscribes to a trip's calendar gets only what the travellers who added them
+// chose to share: the union of every trip_observers doc for them on this trip.
+// A doc with no `scope` means everything.
+
+function observerArea(area) {
+  return {
+    mode: ['all', 'none', 'people', 'items'].includes(area?.mode) ? area.mode : 'all',
+    ids: Array.isArray(area?.ids) ? area.ids : [],
+  }
+}
+
+function observerTravelMatch(area, key, travelerIds) {
+  if (area.mode === 'all') return true
+  if (area.mode === 'people') return (travelerIds || []).some(id => area.ids.includes(id))
+  if (area.mode === 'items') return area.ids.includes(key)
+  return false
+}
+
+function observerEventMatch(area, event) {
+  if (area.mode === 'all') return true
+  if (area.mode === 'people') {
+    const raw = event.assigned_to
+    const people = typeof raw === 'string' ? [raw] : (Array.isArray(raw) ? raw : [])
+    if (people[0] === '__all__') return area.ids.length > 0
+    return people.some(id => area.ids.includes(id))
+  }
+  if (area.mode === 'items') return area.ids.includes(event.id)
+  return false
+}
+
+const legScopeKey = l => l._source === 'legacy'
+  ? `legacy-leg:${l._legacyDocId}:${l._legacyIdx}` : `leg:${l._docId}`
+const stayScopeKey = a => a._source === 'legacy'
+  ? `legacy-stay:${a._legacyDocId}` : `stay:${a._docId}`
+
+// null when `uid` travels on the trip (or isn't an observer) — no narrowing.
+async function observerScopesFor(tripId, uid) {
+  if (!uid || await isTripMember(tripId, uid)) return null
+  const snap = await db.collection('trip_observers')
+    .where('trip_id', '==', tripId).where('user_id', '==', uid).get()
+  if (snap.empty) return null
+  return snap.docs.map(d => {
+    const scope = d.data().scope || {}
+    return { travel: observerArea(scope.travel), events: observerArea(scope.events) }
+  })
+}
+
+function scopeLegs(legs, scopes) {
+  if (!scopes) return legs
+  return legs.filter(l => scopes.some(s => observerTravelMatch(s.travel, legScopeKey(l), l.traveler_ids)))
+}
+
+function scopeAccoms(accoms, scopes) {
+  if (!scopes) return accoms
+  return accoms.filter(a => scopes.some(s => observerTravelMatch(s.travel, stayScopeKey(a), a.traveler_ids)))
+}
+
+function scopeEvents(events, scopes) {
+  if (!scopes) return events
+  return events.filter(e => scopes.some(s => observerEventMatch(s.events, e)))
+}
+
 // ─── Cloud Function ───────────────────────────────────────────────────────────
 
 const db = getFirestore()
@@ -538,6 +602,7 @@ exports.calendarFeed = functions.https.onRequest(async (req, res) => {
   const tripSnap = await db.collection('trips').doc(trip_id).get()
   if (!tripSnap.exists) return res.status(404).send('Trip not found')
   const trip = { id: tripSnap.id, ...tripSnap.data() }
+  const scopes = await observerScopesFor(trip_id, ownerId)
 
   let icsContent
 
@@ -556,14 +621,14 @@ exports.calendarFeed = functions.https.onRequest(async (req, res) => {
     const members       = profiles.filter(s => s.exists).map(s => ({ id: s.id, ...s.data() }))
 
     let { legs, accoms } = buildNormalizedTravel(travelDetails, sharedLegs, sharedAccoms, members)
-    legs   = filterTravelersOnLegs(legs, filter.traveler_ids)
-    accoms = filterTravelersOnAccoms(accoms, filter.traveler_ids)
+    legs   = filterTravelersOnLegs(scopeLegs(legs, scopes), filter.traveler_ids)
+    accoms = filterTravelersOnAccoms(scopeAccoms(accoms, scopes), filter.traveler_ids)
 
     if (type === 'combined') {
       const eventsSnap = await db.collection('itinerary_events')
         .where('trip_id', '==', trip_id).orderBy('time', 'asc').get()
       const allEvents = eventsSnap.docs.map(d => ({ id: d.id, ...d.data() }))
-      const events = filterEvents(allEvents, filter, ownerId)
+      const events = filterEvents(scopeEvents(allEvents, scopes), filter, ownerId)
       icsContent = buildCombinedICS(trip, events, legs, accoms)
     } else {
       icsContent = buildTravelICS(trip, legs, accoms)
@@ -572,7 +637,7 @@ exports.calendarFeed = functions.https.onRequest(async (req, res) => {
     const eventsSnap = await db.collection('itinerary_events')
       .where('trip_id', '==', trip_id).orderBy('time', 'asc').get()
     const allEvents = eventsSnap.docs.map(d => ({ id: d.id, ...d.data() }))
-    const events = filterEvents(allEvents, filter, ownerId)
+    const events = filterEvents(scopeEvents(allEvents, scopes), filter, ownerId)
     icsContent = buildItineraryICS(trip, events)
   }
 

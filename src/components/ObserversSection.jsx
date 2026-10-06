@@ -1,15 +1,22 @@
 import { useState, useEffect } from 'react'
 import {
-  collection, query, where, getDocs, addDoc, deleteDoc, doc, getDoc, serverTimestamp,
+  collection, query, where, getDocs, addDoc, deleteDoc, updateDoc, doc, getDoc, serverTimestamp,
 } from 'firebase/firestore'
 import { db } from '../lib/firebase'
-import { Eye, Plus, Check, Trash2, UserPlus, Sparkles } from 'lucide-react'
+import { Eye, Plus, Check, Trash2, UserPlus, Sparkles, SlidersHorizontal } from 'lucide-react'
+import { FULL_SCOPE, scopeSummary } from '../lib/observerScope'
+import ObserverScopeEditor from './ObserverScopeEditor'
 
 // Observers are people who can view a trip without travelling on it. BCC-style:
 // you only ever see the observers *you* added, and observers never see each
 // other. That privacy is enforced here in the UI (see the note in the rules).
-export default function ObserversSection({ tripId, members = [], currentUser, friends = [], onMembersChanged }) {
-  const [observers, setObservers] = useState([])   // {docId, user_id, name, email} added by me
+// Each observer also has a scope — which travel and events they can see — set
+// by whoever added them (see lib/observerScope.js).
+export default function ObserversSection({
+  tripId, members = [], currentUser, friends = [], onMembersChanged, legs = [], accoms = [],
+}) {
+  const [observers, setObservers] = useState([])   // {docId, user_id, name, email, scope} added by me
+  const [editingId, setEditingId] = useState(null) // docId whose scope editor is open
   const [email, setEmail] = useState('')
   const [busy, setBusy] = useState(false)
   const [msg, setMsg] = useState('')
@@ -32,6 +39,7 @@ export default function ObserversSection({ tripId, members = [], currentUser, fr
         user_id: data.user_id,
         name: p.exists() ? (p.data().full_name || 'Unknown') : 'Unknown',
         email: p.exists() ? p.data().email : '',
+        scope: data.scope || FULL_SCOPE,
       }
     }))
     rows.sort((a, b) => a.name.localeCompare(b.name))
@@ -43,10 +51,18 @@ export default function ObserversSection({ tripId, members = [], currentUser, fr
     if (profile.id === currentUser.id) return "You can't observe your own trip."
     if (members.some(m => m.id === profile.id)) return `${profile.full_name} is already a traveller.`
     if (observers.some(o => o.user_id === profile.id)) return `${profile.full_name} is already observing.`
-    await addDoc(collection(db, 'trip_observers'), {
-      trip_id: tripId, user_id: profile.id, added_by: currentUser.id, created_at: serverTimestamp(),
+    const ref = await addDoc(collection(db, 'trip_observers'), {
+      trip_id: tripId, user_id: profile.id, added_by: currentUser.id,
+      scope: FULL_SCOPE, created_at: serverTimestamp(),
     })
+    setEditingId(ref.id)   // open the scope editor straight away
     return ''
+  }
+
+  async function saveScope(docId, scope) {
+    await updateDoc(doc(db, 'trip_observers', docId), { scope })
+    setEditingId(null)
+    load()
   }
 
   async function addByEmail() {
@@ -105,14 +121,21 @@ export default function ObserversSection({ tripId, members = [], currentUser, fr
         <div className="px-5 pb-5 space-y-3 slide-up">
           <p className="text-xs" style={{ color: '#5a5248' }}>
             Observers can view this trip but aren’t travelling. They can’t see each other,
-            and other travellers won’t see the observers you add.
+            and other travellers won’t see the observers you add. Tap the line under a
+            name to choose which travel and events they see.
           </p>
 
           {observers.map(o => (
-            <div key={o.docId} className="flex items-center justify-between gap-2 group">
+            <div key={o.docId}>
+            <div className="flex items-center justify-between gap-2 group">
               <div className="min-w-0">
                 <p className="text-sm truncate" style={{ color: '#d4cfc8' }}>{o.name}</p>
-                {o.email && <p className="text-xs truncate" style={{ color: '#5a5248' }}>{o.email}</p>}
+                <button onClick={() => setEditingId(id => id === o.docId ? null : o.docId)}
+                  className="flex items-center gap-1 text-xs text-left" style={{ color: '#7a9ab5' }}
+                  title="Choose what they can see">
+                  <SlidersHorizontal size={10} className="flex-shrink-0" />
+                  <span className="truncate">{scopeSummary(o.scope, members)}</span>
+                </button>
               </div>
               <div className="flex items-center gap-3 flex-shrink-0 opacity-0 group-hover:opacity-100 transition-opacity">
                 <button onClick={() => promote(o)} className="flex items-center gap-1 text-xs" style={{ color: '#d4b87a' }} title="Make a traveller">
@@ -122,6 +145,12 @@ export default function ObserversSection({ tripId, members = [], currentUser, fr
                   <Trash2 size={13} />
                 </button>
               </div>
+            </div>
+            {editingId === o.docId && (
+              <ObserverScopeEditor
+                tripId={tripId} scope={o.scope} members={members} legs={legs} accoms={accoms}
+                onSave={scope => saveScope(o.docId, scope)} onCancel={() => setEditingId(null)} />
+            )}
             </div>
           ))}
 

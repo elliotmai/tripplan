@@ -12,6 +12,13 @@
  */
 export const WHATS_NEW = [
   {
+    version: '2026.10.06',
+    date: 'October 2026',
+    items: [
+      '👀 Choose what each observer sees. In Travelers → Observers, tap the line under their name to share all travel or just one person’s, hand-picked flights and stays, and all events, one person’s events or specific ones. Observers no longer see polls, ideas, photos or history.',
+    ],
+  },
+  {
     version: '2026.09.14',
     date: 'September 2026',
     items: [

@@ -921,6 +921,7 @@ export default function TravelersTab({
         <ObserversSection
           tripId={tripId} members={members} currentUser={currentUser}
           friends={friendProfiles} onMembersChanged={onUpdate}
+          legs={allLegs} accoms={allAccoms}
         />
       )}
 

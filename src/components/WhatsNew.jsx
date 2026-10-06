@@ -1,5 +1,6 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { WHATS_NEW } from '../config/whatsNew'
+import { useAuth } from '../contexts/AuthContext'
 
 const STORAGE_KEY = 'tripplan.whatsNewSeen'
 
@@ -43,6 +44,18 @@ function unseenEntries() {
 export default function WhatsNew() {
   const latest = WHATS_NEW[0]
   const [entries, setEntries] = useState(unseenEntries)
+  const { user } = useAuth()
+  const newAccount = user?.intro_seen === false
+
+  // A brand-new account gets the WelcomeTour instead. Stay hidden for the rest
+  // of this session (so it doesn't pop up right after the tour) and mark the
+  // current changelog as seen.
+  const [suppressed, setSuppressed] = useState(false)
+  if (newAccount && !suppressed) setSuppressed(true)
+  useEffect(() => {
+    if (!suppressed || !latest) return
+    try { localStorage.setItem(STORAGE_KEY, latest.version) } catch { /* ignore */ }
+  }, [suppressed, latest])
 
   function dismiss() {
     try {
@@ -53,7 +66,7 @@ export default function WhatsNew() {
     setEntries([])
   }
 
-  if (!entries.length || !latest) return null
+  if (!entries.length || !latest || suppressed) return null
 
   const stacked = entries.length > 1
 

@@ -44,6 +44,7 @@ export function AuthProvider({ children }) {
       id: newUser.uid, email, full_name: name,
       home_airport: '', home_city: '',
       temp_unit: 'C', time_format: '12',
+      intro_seen: false,   // shows the WelcomeTour once
       created_at: serverTimestamp(),
     }
     await setDoc(doc(db, 'profiles', newUser.uid), profileData)

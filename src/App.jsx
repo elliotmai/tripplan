@@ -8,6 +8,7 @@ import FriendsPage from './pages/FriendsPage'
 import FlightsPage from './pages/FlightsPage'
 import UpcomingTripPage from './pages/UpcomingTripPage'
 import WhatsNew from './components/WhatsNew'
+import WelcomeTour from './components/WelcomeTour'
 
 function AppRoutes() {
   const { user, loading } = useAuth()
@@ -23,6 +24,8 @@ function AppRoutes() {
   if (!user) return <AuthPage />
 
   return (
+    <>
+    <WelcomeTour />
     <Routes>
       <Route path="/" element={<TripsPage />} />
       <Route path="/trips/upcoming" element={<UpcomingTripPage />} />
@@ -33,6 +36,7 @@ function AppRoutes() {
       
       <Route path="*" element={<Navigate to="/" />} />
     </Routes>
+    </>
   )
 }
 

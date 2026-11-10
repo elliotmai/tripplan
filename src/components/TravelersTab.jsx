@@ -594,9 +594,33 @@ export default function TravelersTab({
     await Promise.all(snap.docs.map(d => deleteDoc(doc(db, 'trip_members', d.id))))
   }
 
+  // Drop a departing traveller from the trip's travel: shared legs and stays
+  // they were the only one on are deleted, ones shared with others just lose
+  // them from traveler_ids. Their legacy per-user travel_details doc goes too.
+  async function removeTravelFor(userId) {
+    const strip = (coll, items) => items
+      .filter(item => item.id && item.traveler_ids?.includes(userId))
+      .map(item => {
+        const remaining = item.traveler_ids.filter(id => id !== userId)
+        return remaining.length
+          ? updateDoc(doc(db, coll, item.id), { traveler_ids: remaining })
+          : deleteDoc(doc(db, coll, item.id))
+      })
+    await Promise.all([
+      ...strip('trip_legs', sharedLegs),
+      ...strip('trip_accommodations', sharedAccoms),
+    ])
+    await Promise.all(
+      travelDetails
+        .filter(d => d.user_id === userId && d._docId)
+        .map(d => deleteDoc(doc(db, 'travel_details', d._docId)).catch(() => { }))
+    )
+  }
+
   async function removeMember(member) {
     setMenuMember(null)
-    if (!confirm(`Remove ${member.full_name} from this trip?`)) return
+    if (!confirm(`Remove ${member.full_name} from this trip? Their travel and stays will be removed too.`)) return
+    await removeTravelFor(member.id)
     await deleteMembership(member.id)
     onUpdate()
   }

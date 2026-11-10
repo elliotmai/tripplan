@@ -35,6 +35,10 @@ service cloud.firestore {
                     && request.resource.data.user_id == request.auth.uid;
       allow update: if request.auth != null
                     && resource.data.user_id == request.auth.uid;
+      // The traveller themselves, or the trip's creator when removing them.
+      allow delete: if request.auth != null
+                    && (resource.data.user_id == request.auth.uid
+                        || get(/databases/$(database)/documents/trips/$(resource.data.trip_id)).data.created_by == request.auth.uid);
     }
 
     // TRIP LEGS (shared, multi-traveler)

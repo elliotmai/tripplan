@@ -3,6 +3,7 @@ import {
   collection, query, where, getDocs,
   addDoc, updateDoc, deleteDoc, doc, serverTimestamp,
 } from 'firebase/firestore'
+import { pruneTravel } from '../lib/pruneTravel'
 import { db } from '../lib/firebase'
 import { downloadTravelICS } from '../lib/ical'
 import {
@@ -594,9 +595,21 @@ export default function TravelersTab({
     await Promise.all(snap.docs.map(d => deleteDoc(doc(db, 'trip_members', d.id))))
   }
 
+  // Drop a departing traveller from the trip's travel: legs and stays only
+  // they were on are deleted, shared ones just lose them. Their legacy
+  // per-user travel_details doc goes too (rules allow the trip's creator).
+  async function removeTravelFor(userId) {
+    await pruneTravel({
+      keepIds: members.map(m => m.id).filter(id => id !== userId),
+      travel: { travelDetails, sharedLegs, sharedAccoms },
+      deleteLegacy: true,
+    })
+  }
+
   async function removeMember(member) {
     setMenuMember(null)
-    if (!confirm(`Remove ${member.full_name} from this trip?`)) return
+    if (!confirm(`Remove ${member.full_name} from this trip? Their travel and stays will be removed too.`)) return
+    await removeTravelFor(member.id)
     await deleteMembership(member.id)
     onUpdate()
   }

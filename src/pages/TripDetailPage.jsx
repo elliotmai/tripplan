@@ -5,6 +5,7 @@ import { db } from '../lib/firebase'
 import { useAuth } from '../contexts/useAuth'
 import { ensureTripFriendships } from '../lib/friends'
 import { filterTravel, canSeeEvent } from '../lib/observerScope'
+import { pruneTravel } from '../lib/pruneTravel'
 import { format, parseISO, eachDayOfInterval } from 'date-fns'
 import { ArrowLeft, Pencil, MapPin, Calendar, Users, CalendarDays, Eye } from 'lucide-react'
 import ItineraryTab from '../components/ItineraryTab'
@@ -77,6 +78,16 @@ export default function TripDetailPage() {
         })
       )
       setMembers(memberData)
+
+      // Travellers clean up travel still pointing at people who have left the
+      // trip (e.g. removed before removal also cleared their travel).
+      if (user?.id && memberData.some(m => m.id === user.id)) {
+        travel = await pruneTravel({
+          keepIds: memberData.map(m => m.id),
+          travel,
+          deleteLegacy: tripSnap.data().created_by === user.id,
+        })
+      }
 
       // Am I an observer here (viewing without travelling)? Used to show an
       // "Observing" badge, keep the trip read-only for me, and narrow what I see

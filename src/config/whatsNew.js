@@ -12,6 +12,13 @@
  */
 export const WHATS_NEW = [
   {
+    version: '2026.11.10',
+    date: 'November 2026',
+    items: [
+      '🧳 Removing someone from a trip now tidies up their travel too. Flights and stays that were only theirs are deleted; ones shared with others stay, with just that person taken off. Leftovers from people removed earlier are cleared up the next time a traveller opens the trip.',
+    ],
+  },
+  {
     version: '2026.10.06',
     date: 'October 2026',
     items: [

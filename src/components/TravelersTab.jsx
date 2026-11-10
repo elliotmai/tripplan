@@ -3,6 +3,7 @@ import {
   collection, query, where, getDocs,
   addDoc, updateDoc, deleteDoc, doc, serverTimestamp,
 } from 'firebase/firestore'
+import { pruneTravel } from '../lib/pruneTravel'
 import { db } from '../lib/firebase'
 import { downloadTravelICS } from '../lib/ical'
 import {
@@ -594,27 +595,15 @@ export default function TravelersTab({
     await Promise.all(snap.docs.map(d => deleteDoc(doc(db, 'trip_members', d.id))))
   }
 
-  // Drop a departing traveller from the trip's travel: shared legs and stays
-  // they were the only one on are deleted, ones shared with others just lose
-  // them from traveler_ids. Their legacy per-user travel_details doc goes too.
+  // Drop a departing traveller from the trip's travel: legs and stays only
+  // they were on are deleted, shared ones just lose them. Their legacy
+  // per-user travel_details doc goes too (rules allow the trip's creator).
   async function removeTravelFor(userId) {
-    const strip = (coll, items) => items
-      .filter(item => item.id && item.traveler_ids?.includes(userId))
-      .map(item => {
-        const remaining = item.traveler_ids.filter(id => id !== userId)
-        return remaining.length
-          ? updateDoc(doc(db, coll, item.id), { traveler_ids: remaining })
-          : deleteDoc(doc(db, coll, item.id))
-      })
-    await Promise.all([
-      ...strip('trip_legs', sharedLegs),
-      ...strip('trip_accommodations', sharedAccoms),
-    ])
-    await Promise.all(
-      travelDetails
-        .filter(d => d.user_id === userId && d._docId)
-        .map(d => deleteDoc(doc(db, 'travel_details', d._docId)).catch(() => { }))
-    )
+    await pruneTravel({
+      keepIds: members.map(m => m.id).filter(id => id !== userId),
+      travel: { travelDetails, sharedLegs, sharedAccoms },
+      deleteLegacy: true,
+    })
   }
 
   async function removeMember(member) {

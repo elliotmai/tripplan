@@ -139,7 +139,6 @@ export default function TripDetailPage() {
 
 
 
-  const isOwner = members.find(m => m.id === user?.id)?.role === 'owner'
   const isMember = members.some(m => m.id === user?.id)
   const visibleTabs = isObserver ? TABS.filter(t => OBSERVER_TABS.has(t.id)) : TABS
   const eventFilter = useMemo(
@@ -355,7 +354,6 @@ export default function TripDetailPage() {
       {showEdit && (
         <EditTripSheet
           trip={trip}
-          isOwner={isOwner}
           currentUser={user}
           onClose={() => setShowEdit(false)}
           onSaved={reloadTrip}

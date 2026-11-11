@@ -9,11 +9,11 @@ service cloud.firestore {
     }
 
     // TRIPS
+    // Any traveller can delete a trip. Membership lives in trip_members under
+    // random ids, which rules can't look up, so (like the other trip data)
+    // "is a traveller" is enforced in the UI.
     match /trips/{tripId} {
-      allow read, update: if request.auth != null;
-      allow create:       if request.auth != null;
-      allow delete:       if request.auth != null
-                          && resource.data.created_by == request.auth.uid;
+      allow read, update, create, delete: if request.auth != null;
     }
 
     // TRIP MEMBERS

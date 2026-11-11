@@ -12,6 +12,13 @@
  */
 export const WHATS_NEW = [
   {
+    version: '2026.11.11',
+    date: 'November 2026',
+    items: [
+      '🗑️ Any traveller on a trip can now delete it from Edit trip → Danger Zone, not just the person who created it.',
+    ],
+  },
+  {
     version: '2026.11.10',
     date: 'November 2026',
     items: [

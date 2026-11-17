@@ -950,6 +950,11 @@ exports.appTrips = functions.https.onRequest(async (req, res) => {
         start_date: trip.start_date || null,
         end_date: trip.end_date || null,
         is_current: trip.start_date <= today && today <= trip.end_date,
+        // The destination's coordinates, as the trip stores them for weather.
+        // A consumer uses them to tell a trip across town from one across the
+        // country; they add nothing the destination name doesn't already say.
+        lat: Number.isFinite(trip.lat) ? trip.lat : null,
+        lon: Number.isFinite(trip.lon) ? trip.lon : null,
       }))
 
     res.set('Cache-Control', 'private, max-age=60')

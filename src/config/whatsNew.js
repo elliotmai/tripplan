@@ -12,6 +12,13 @@
  */
 export const WHATS_NEW = [
   {
+    version: '2026.11.17',
+    date: 'November 2026',
+    items: [
+      '🔌 Account → Connected apps loads again, so you can connect another of your apps (like the Fridge Board) to see your upcoming trips.',
+    ],
+  },
+  {
     version: '2026.11.11',
     date: 'November 2026',
     items: [

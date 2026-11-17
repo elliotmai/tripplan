@@ -475,7 +475,7 @@ export default function AccountPage() {
 
         {/* Account actions */}
         <Section title="Connected Apps">
-          <ConnectedApps userId={user?.uid} />
+          <ConnectedApps userId={user?.id} />
         </Section>
 
         <Section title="Account">

@@ -1036,6 +1036,9 @@ exports.appTripTravel = functions.https.onRequest(async (req, res) => {
           arrive_tz: leg.arrive_tz || null,
           notes: leg.notes || null,
           traveler_names: leg.traveler_names || [],
+          // Whether the token's owner is on this leg, so a connected app can
+          // show "my travel" without matching on display names.
+          mine: (leg.traveler_ids || []).includes(owner.uid),
         }))
         .filter(leg => leg.depart_at)
         .sort((a, b) => String(a.depart_at).localeCompare(String(b.depart_at))),
@@ -1045,6 +1048,7 @@ exports.appTripTravel = functions.https.onRequest(async (req, res) => {
         check_in: accom.check_in || null,
         check_out: accom.check_out || null,
         traveler_names: accom.traveler_names || [],
+        mine: (accom.traveler_ids || []).includes(owner.uid),
       })),
     })
   } catch (err) {

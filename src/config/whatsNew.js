@@ -12,6 +12,13 @@
  */
 export const WHATS_NEW = [
   {
+    version: '2026.11.18',
+    date: 'November 2026',
+    items: [
+      '🔒 Fixed an issue where installed Android app users could get signed out roughly once a day.',
+    ],
+  },
+  {
     version: '2026.11.17',
     date: 'November 2026',
     items: [

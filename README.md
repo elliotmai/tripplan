@@ -214,6 +214,21 @@ functions/
 | `VITE_FUNCTIONS_BASE_URL` | client `.env` | Base URL of your deployed Cloud Functions (calendar + flight tracking) |
 | `FR24_API_KEY` | `functions/.env` | Flightradar24 API token (server-side only) |
 
+### Automatic deploys
+
+`.github/workflows/deploy-functions.yml` deploys `functions/` to `wander-f10b1`
+on every push to `main` that touches it, after `npm test`, and can be run by
+hand from the Actions tab. It needs repository secrets (Settings → Secrets and
+variables → Actions):
+
+| Secret | What it is |
+| --- | --- |
+| `FIREBASE_SERVICE_ACCOUNT` | Key JSON for a deploy-only service account. Google Cloud console → IAM & Admin → Service accounts → Create, with the roles **Cloud Functions Admin**, **Service Account User** and **Firebase Admin**; then Keys → Add key → JSON. Or instead: |
+| `FIREBASE_TOKEN` | From `firebase login:ci`, as KitchenHub's deploy uses. |
+| `FR24_API_KEY` | The token from `functions/.env`. Without it the workflow deploys every function except `trackFlight`, so the live key isn't wiped. |
+
+The key JSON is a secret: paste it only into GitHub, never into the repo.
+
 ---
 
 ## Deploy

@@ -1,0 +1,86 @@
+name: Deploy Firebase Functions
+
+# Deploys functions/ to wander-f10b1 on every push to main that touches them,
+# and on demand (Actions → Deploy Firebase Functions → Run workflow).
+#
+# Repository secrets (Settings → Secrets and variables → Actions), one of:
+#   FIREBASE_SERVICE_ACCOUNT  key JSON for a service account allowed to deploy
+#                             functions (README "Automatic deploys" lists roles)
+#   FIREBASE_TOKEN            from `firebase login:ci` (what KitchenHub uses)
+# And, to keep live flight tracking working:
+#   FR24_API_KEY              the Flightradar24 token from functions/.env.
+#                             Without it, trackFlight is left as deployed and
+#                             every other function is updated.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'functions/**'
+      - 'firebase.json'
+      - '.github/workflows/deploy-functions.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-functions
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    env:
+      HAS_SA: ${{ secrets.FIREBASE_SERVICE_ACCOUNT != '' }}
+      HAS_TOKEN: ${{ secrets.FIREBASE_TOKEN != '' }}
+      HAS_FR24: ${{ secrets.FR24_API_KEY != '' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: functions/package-lock.json
+
+      - name: Install
+        run: npm ci --prefix functions
+
+      - name: Test
+        run: npm test --prefix functions
+
+      - name: Check for a deploy credential
+        if: env.HAS_SA != 'true' && env.HAS_TOKEN != 'true'
+        run: |
+          echo "::error title=No deploy credential::Add FIREBASE_SERVICE_ACCOUNT or FIREBASE_TOKEN under Settings → Secrets and variables → Actions, then re-run. See README, Automatic deploys."
+          exit 1
+
+      - name: Sign in to Google Cloud
+        if: env.HAS_SA == 'true'
+        uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
+
+      - name: Write functions/.env
+        if: env.HAS_FR24 == 'true'
+        env:
+          FR24_API_KEY: ${{ secrets.FR24_API_KEY }}
+        run: printf 'FR24_API_KEY=%s\n' "$FR24_API_KEY" > functions/.env
+
+      - name: Deploy
+        env:
+          FIREBASE_TOKEN: ${{ secrets.FIREBASE_TOKEN }}
+        run: |
+          # Without the FR24 key, leave trackFlight alone: deploying it with no
+          # .env would wipe the key it runs on.
+          if [ "$HAS_FR24" = "true" ]; then
+            ONLY="functions"
+          else
+            ONLY="functions:calendarFeed,functions:nextSharedTrip,functions:appTrips,functions:appTripTravel"
+            echo "::warning title=trackFlight not deployed::Add the FR24_API_KEY secret to deploy trackFlight too."
+          fi
+          AUTH=""
+          if [ "$HAS_SA" != "true" ]; then AUTH="--token $FIREBASE_TOKEN"; fi
+          npx --yes firebase-tools@14 deploy --only "$ONLY" --project wander-f10b1 --non-interactive --force $AUTH
+
+      - name: Clean up
+        if: always()
+        run: rm -f functions/.env

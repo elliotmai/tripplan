@@ -5,6 +5,8 @@
 const functions  = require('firebase-functions/v1')
 const { initializeApp } = require('firebase-admin/app')
 const { getFirestore, FieldValue } = require('firebase-admin/firestore')
+const { getAuth } = require('firebase-admin/auth')
+const { verifyHivePass } = require('./hivePass')
 
 initializeApp()
 
@@ -877,12 +879,37 @@ function corsPreflight(req, res) {
   return true
 }
 
+// The Wander account with this email, or null.
+async function uidForEmail(email) {
+  try {
+    return (await getAuth().getUserByEmail(email)).uid
+  } catch (err) {
+    if (err && err.code === 'auth/user-not-found') return null
+    throw err
+  }
+}
+
 // Resolves a token to its owner, or sends the error and returns null.
 // Accepts `Authorization: Bearer …` as well as `?token=`: a query string ends
 // up in server logs and browser history, and a server-to-server caller has no
 // reason to use one.
+//
+// Hive (the home-screen app, Fridge-Board repo) sends `Authorization: Hive
+// <pass>` instead: a two-minute pass for whoever is signed in to it, made for
+// Wander only (./hivePass.js). Its confirmed email finds their Wander account,
+// so no token is stored anywhere. Anything wrong is the same 403 as a bad token.
 async function ownerForAppToken(req, res) {
   const header = String(req.get('authorization') || '')
+  const hive = header.match(/^Hive\s+(\S+)$/i)
+  if (hive) {
+    const claims = verifyHivePass(hive[1])
+    const uid = claims && claims.email && claims.email_verified ? await uidForEmail(claims.email) : null
+    if (!uid) {
+      res.status(403).json({ error: 'invalid_token' })
+      return null
+    }
+    return { token: null, uid }
+  }
   const bearer = header.startsWith('Bearer ') ? header.slice(7).trim() : ''
   const token = bearer || String(req.query.token || '')
   if (!token) {

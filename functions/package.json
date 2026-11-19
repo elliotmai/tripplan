@@ -3,6 +3,7 @@
   "description": "Firebase Cloud Functions for Wander",
   "scripts": {
     "lint": "echo \"No linting configured\"",
+    "test": "node --test",
     "serve": "firebase emulators:start --only functions",
     "deploy": "firebase deploy --only functions"
   },

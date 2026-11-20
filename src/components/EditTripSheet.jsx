@@ -3,7 +3,7 @@ import { useNavigate } from 'react-router-dom'
 import {
   doc, updateDoc, deleteDoc, collection, query, where, getDocs,
   serverTimestamp,
-} from 'firebase/firestore'
+} from '../lib/store'
 import { db } from '../lib/firebase'
 import { logActivity, fieldDiff } from '../lib/activity'
 import { geocodeCity } from '../lib/weather'

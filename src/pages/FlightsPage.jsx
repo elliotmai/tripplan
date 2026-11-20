@@ -1,5 +1,5 @@
 import { useState, useEffect, useMemo } from 'react'
-import { collection, query, where, getDocs, doc, getDoc } from 'firebase/firestore'
+import { collection, query, where, getDocs, doc, getDoc } from '../lib/store'
 import { db } from '../lib/firebase'
 import { useAuth } from '../contexts/useAuth'
 import { normalizeLegs } from '../lib/travel'

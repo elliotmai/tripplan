@@ -1,5 +1,5 @@
 import { useState, useRef } from 'react'
-import { collection, addDoc, serverTimestamp } from 'firebase/firestore'
+import { collection, addDoc, serverTimestamp } from '../lib/store'
 import { db } from '../lib/firebase'
 import { useAuth } from '../contexts/useAuth'
 import { geocodeCity } from '../lib/weather'

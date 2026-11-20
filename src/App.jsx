@@ -10,6 +10,7 @@ import FlightsPage from './pages/FlightsPage'
 import UpcomingTripPage from './pages/UpcomingTripPage'
 import WhatsNew from './components/WhatsNew'
 import WelcomeTour from './components/WelcomeTour'
+import ImportBanner from './components/ImportBanner'
 
 function AppRoutes() {
   const { user, loading } = useAuth()
@@ -27,6 +28,7 @@ function AppRoutes() {
   return (
     <>
     <WelcomeTour />
+    <ImportBanner key={user.id} />
     <Routes>
       <Route path="/" element={<TripsPage />} />
       <Route path="/trips/upcoming" element={<UpcomingTripPage />} />

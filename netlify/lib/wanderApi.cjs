@@ -1,0 +1,1083 @@
+// Explicit v1 import: these are 1st-gen functions, and since firebase-functions
+// v6 the bare import creates 2nd-gen ones instead. Switching generations means
+// deleting and recreating the functions under new URLs, which would break
+// existing calendar subscriptions and connected-app links.
+// Ported from functions/index.js (Firebase Cloud Functions) when Wander moved to
+// Hive's Supabase project. The handlers are unchanged apart from where they
+// read: `db` below answers the handful of Firestore Admin calls they make,
+// over Supabase's REST API with the service key (wander.docs). They still take
+// an Express-style (req, res); netlify/functions/api.mjs adapts to that.
+const { verifyHivePass } = require('./hivePass.cjs')
+const functions = { https: { onRequest: (handler) => handler } }
+const FieldValue = { serverTimestamp: () => ({ $ts: Date.now() }) }
+const getFirestore = () => require('./supabaseDocs.cjs').docsDb()
+
+// ─── ICS helpers — timezone-aware ────────────────────────────────────────────
+
+function pad(n) { return String(n).padStart(2, '0') }
+
+function escapeICS(str) {
+  if (!str) return ''
+  return str
+    .replace(/\\/g, '\\\\')
+    .replace(/;/g, '\\;')
+    .replace(/,/g, '\\,')
+    .replace(/\n/g, '\\n')
+}
+
+// UTC timestamp for DTSTAMP
+function nowUTC() {
+  const d = new Date()
+  return `${d.getUTCFullYear()}${pad(d.getUTCMonth()+1)}${pad(d.getUTCDate())}T${pad(d.getUTCHours())}${pad(d.getUTCMinutes())}${pad(d.getUTCSeconds())}Z`
+}
+
+// 'yyyy-MM-dd' → 'yyyyMMdd'
+function toDateValue(dateStr) {
+  const [y, m, d] = dateStr.split('-')
+  return `${y}${m}${d}`
+}
+
+// Increment yyyyMMdd by 1 day
+function nextDay(icsDate) {
+  const y    = parseInt(icsDate.slice(0, 4))
+  const m    = parseInt(icsDate.slice(4, 6)) - 1
+  const d    = parseInt(icsDate.slice(6, 8))
+  const next = new Date(y, m, d + 1)
+  return `${next.getFullYear()}${pad(next.getMonth()+1)}${pad(next.getDate())}`
+}
+
+// Convert HH:mm + yyyy-MM-dd + IANA tz → ICS local datetime string
+function toTZValue(dateStr, timeStr) {
+  const [y, m, d] = dateStr.split('-')
+  const [h, min]  = (timeStr || '00:00').split(':')
+  return `${y}${m}${d}T${pad(Number(h))}${pad(Number(min))}00`
+}
+
+// Convert datetime-local string 'yyyy-MM-ddTHH:mm' → ICS local datetime string
+function isoLocalToValue(isoLocal) {
+  if (!isoLocal) return null
+  const clean    = isoLocal.slice(0, 16)
+  const [dt, tm] = clean.split('T')
+  const [y,m,d]  = dt.split('-')
+  const [h, min] = tm.split(':')
+  return `${y}${m}${d}T${pad(Number(h))}${pad(Number(min))}00`
+}
+
+// Get date part 'yyyy-MM-dd' from a datetime-local string
+function isoLocalToDate(isoLocal) {
+  return isoLocal?.slice(0, 10) || null
+}
+
+function formatDTReadable(isoLocal, tzId) {
+  if (!isoLocal) return ''
+  try {
+    return new Date(isoLocal).toLocaleString('en-US', {
+      timeZone:     tzId || undefined,
+      month:        'short', day: 'numeric', year: 'numeric',
+      hour:         '2-digit', minute: '2-digit',
+      timeZoneName: 'short',
+    })
+  } catch { return isoLocal }
+}
+
+function icsHeader(calName, timezone) {
+  const lines = [
+    'BEGIN:VCALENDAR',
+    'VERSION:2.0',
+    'PRODID:-//Wander//Trip Planner//EN',
+    'CALSCALE:GREGORIAN',
+    'METHOD:PUBLISH',
+    `X-WR-CALNAME:${escapeICS(calName)}`,
+  ]
+  if (timezone) lines.push(`X-WR-TIMEZONE:${timezone}`)
+  return lines
+}
+
+
+// ─── VTIMEZONE generator ──────────────────────────────────────────────────────
+// Google Calendar requires a VTIMEZONE block for every TZID used in the file.
+// We generate one dynamically using the Intl API.
+
+function getOffsetMinutes(date, tzId) {
+  const utcStr   = date.toLocaleString('en-US', { timeZone: 'UTC', hour12: false, year:'numeric', month:'2-digit', day:'2-digit', hour:'2-digit', minute:'2-digit' })
+  const localStr = date.toLocaleString('en-US', { timeZone: tzId,  hour12: false, year:'numeric', month:'2-digit', day:'2-digit', hour:'2-digit', minute:'2-digit' })
+  return (parseLocaleStr(localStr) - parseLocaleStr(utcStr)) / 60000
+}
+function parseLocaleStr(s) {
+  const [date, time] = s.split(', ')
+  const [m, d, y] = date.split('/')
+  const [h, min] = time.split(':')
+  return Date.UTC(+y, +m-1, +d, +h === 24 ? 0 : +h, +min)
+}
+function formatTZOffset(minutes) {
+  const sign = minutes >= 0 ? '+' : '-'
+  const abs  = Math.abs(minutes)
+  return `${sign}${pad(Math.floor(abs / 60))}${pad(abs % 60)}`
+}
+function tzAbbr(tzId, date) {
+  try {
+    return new Intl.DateTimeFormat('en-US', { timeZone: tzId, timeZoneName: 'short' })
+      .formatToParts(date).find(p => p.type === 'timeZoneName')?.value || tzId.split('/').pop()
+  } catch { return tzId.split('/').pop() }
+}
+function findTZTransition(year, tzId, fromStdToDst) {
+  let prevOffset = null
+  for (let month = 0; month < 12; month++) {
+    for (let day = 1; day <= 31; day++) {
+      const d = new Date(Date.UTC(year, month, day, 2, 0))
+      if (isNaN(d)) continue
+      const offset = getOffsetMinutes(d, tzId)
+      if (prevOffset !== null && offset !== prevOffset) {
+        if (fromStdToDst === (offset > prevOffset)) return d
+      }
+      prevOffset = offset
+    }
+  }
+  return new Date(Date.UTC(year, 3, 1, 2, 0))
+}
+function localDTStr(date, tzId) {
+  try {
+    const fmt = new Intl.DateTimeFormat('en-CA', {
+      timeZone: tzId, year:'numeric', month:'2-digit', day:'2-digit',
+      hour:'2-digit', minute:'2-digit', second:'2-digit', hour12: false,
+    })
+    const parts = fmt.formatToParts(date)
+    const get = t => parts.find(p => p.type === t)?.value || '00'
+    const h = get('hour') === '24' ? '00' : get('hour')
+    return `${get('year')}${get('month')}${get('day')}T${h}${get('minute')}${get('second')}`
+  } catch { return '19700101T020000' }
+}
+function makeVTimezone(tzId) {
+  if (!tzId || tzId === 'UTC') return []
+  try {
+    const jan = new Date(Date.UTC(2024, 0, 15))
+    const jul = new Date(Date.UTC(2024, 6, 15))
+    const offsetJan = getOffsetMinutes(jan, tzId)
+    const offsetJul = getOffsetMinutes(jul, tzId)
+    const stdOffset = Math.min(offsetJan, offsetJul)
+    const dstOffset = Math.max(offsetJan, offsetJul)
+    if (offsetJan === offsetJul) {
+      return [
+        'BEGIN:VTIMEZONE', `TZID:${tzId}`,
+        'BEGIN:STANDARD', 'DTSTART:19700101T000000',
+        `TZOFFSETFROM:${formatTZOffset(stdOffset)}`, `TZOFFSETTO:${formatTZOffset(stdOffset)}`,
+        `TZNAME:${tzAbbr(tzId, jan)}`, 'END:STANDARD', 'END:VTIMEZONE',
+      ]
+    }
+    const spring = findTZTransition(2024, tzId, true)
+    const fall   = findTZTransition(2024, tzId, false)
+    return [
+      'BEGIN:VTIMEZONE', `TZID:${tzId}`,
+      'BEGIN:DAYLIGHT', `DTSTART:${localDTStr(spring, tzId)}`,
+      `TZOFFSETFROM:${formatTZOffset(stdOffset)}`, `TZOFFSETTO:${formatTZOffset(dstOffset)}`,
+      `TZNAME:${tzAbbr(tzId, jul)}`, 'RRULE:FREQ=YEARLY', 'END:DAYLIGHT',
+      'BEGIN:STANDARD', `DTSTART:${localDTStr(fall, tzId)}`,
+      `TZOFFSETFROM:${formatTZOffset(dstOffset)}`, `TZOFFSETTO:${formatTZOffset(stdOffset)}`,
+      `TZNAME:${tzAbbr(tzId, jan)}`, 'RRULE:FREQ=YEARLY', 'END:STANDARD',
+      'END:VTIMEZONE',
+    ]
+  } catch { return [] }
+}
+
+// Collect all unique non-UTC timezones from a list of VEVENT lines
+// and inject VTIMEZONE blocks after the calendar header lines
+function injectVTimezones(lines) {
+  // Find all TZID values used
+  const tzIds = new Set()
+  for (const line of lines) {
+    const m = line.match(/TZID=([^:]+):/)
+    if (m && m[1] !== 'UTC') tzIds.add(m[1])
+  }
+  if (!tzIds.size) return lines
+
+  // Find insertion point — after last header line (before first BEGIN:VEVENT)
+  const insertAt = lines.findIndex(l => l === 'BEGIN:VEVENT')
+  if (insertAt === -1) return lines
+
+  const vtBlocks = []
+  for (const tzId of tzIds) {
+    makeVTimezone(tzId).forEach(l => vtBlocks.push(l))
+  }
+
+  return [
+    ...lines.slice(0, insertAt),
+    ...vtBlocks,
+    ...lines.slice(insertAt),
+  ]
+}
+
+// ─── Trip banner (all-day) ────────────────────────────────────────────────────
+
+function tripBannerLines(trip) {
+  if (!trip?.start_date || !trip?.end_date) return []
+  const startVal = toDateValue(trip.start_date)
+  const endVal   = nextDay(toDateValue(trip.end_date))
+  const emoji    = trip.cover_emoji ? `${trip.cover_emoji} ` : '✈️ '
+  const desc     = [
+    trip.destination ? `Destination: ${trip.destination}` : null,
+    `${trip.start_date} – ${trip.end_date}`,
+  ].filter(Boolean).join('\n')
+
+  return [
+    'BEGIN:VEVENT',
+    `UID:trip-banner-${trip.id}`,
+    `DTSTAMP:${nowUTC()}`,
+    `SUMMARY:${escapeICS(`${emoji}${trip.name}`)}`,
+    `DTSTART;VALUE=DATE:${startVal}`,
+    `DTEND;VALUE=DATE:${endVal}`,
+    trip.destination ? `LOCATION:${escapeICS(trip.destination)}` : null,
+    `DESCRIPTION:${escapeICS(desc)}`,
+    'END:VEVENT',
+  ].filter(Boolean)
+}
+
+// ─── Itinerary event → VEVENT lines ──────────────────────────────────────────
+
+function eventLines(event, tripTimezone) {
+  const tz = event.timezone || tripTimezone || 'UTC'
+
+  const lines = [
+    'BEGIN:VEVENT',
+    `UID:event-${event.id}`,
+    `DTSTAMP:${nowUTC()}`,
+    `SUMMARY:${escapeICS(event.title)}`,
+  ]
+
+  if (event.time) {
+    const val = toTZValue(event.date, event.time)
+    lines.push(`DTSTART;TZID=${tz}:${val}`)
+    if (event.end_time) {
+      lines.push(`DTEND;TZID=${tz}:${toTZValue(event.date, event.end_time)}`)
+    } else {
+      // default 1-hour duration
+      const [h, min] = event.time.split(':').map(Number)
+      const [y, m, d] = event.date.split('-')
+      lines.push(`DTEND;TZID=${tz}:${y}${m}${d}T${pad(h + 1)}${pad(min)}00`)
+    }
+  } else {
+    const val = toDateValue(event.date)
+    lines.push(`DTSTART;VALUE=DATE:${val}`)
+    lines.push(`DTEND;VALUE=DATE:${nextDay(val)}`)
+  }
+
+  if (event.location) lines.push(`LOCATION:${escapeICS(event.location)}`)
+  if (event.notes)    lines.push(`DESCRIPTION:${escapeICS(event.notes)}`)
+  lines.push('END:VEVENT')
+  return lines
+}
+
+// ─── Travel leg → VEVENT lines ────────────────────────────────────────────────
+
+const TRANSPORT_LABELS = { flight:'Flight', train:'Train', bus:'Bus', car:'Car', ferry:'Ferry', subway:'Subway', taxi:'Taxi', walk:'Walk', other:'Journey' }
+const TRANSPORT_ICONS  = { flight:'✈️', train:'🚂', bus:'🚌', car:'🚗', ferry:'⛴️', subway:'🚇', taxi:'🚕', walk:'🚶', other:'🛸' }
+
+function shortWho(names) {
+  const firstNames = names.map(n => n.split(' ')[0])
+  if (firstNames.length === 0) return 'Traveler'
+  if (firstNames.length === 1) return firstNames[0]
+  if (firstNames.length === 2) return firstNames.join(' & ')
+  return `${firstNames[0]} +${firstNames.length - 1}`
+}
+
+// `leg` is normalized: { transport, number, from, to, depart_at, arrive_at,
+// depart_tz, arrive_tz, notes, traveler_names, _source, _docId | _legacyDocId, _legacyIdx }
+function legLines(leg) {
+  const icon      = TRANSPORT_ICONS[leg.transport] || '🛸'
+  const label     = TRANSPORT_LABELS[leg.transport] || 'Journey'
+  const ref       = leg.number || label
+  const route     = [leg.from, leg.to].filter(Boolean).join(' → ')
+  const names     = leg.traveler_names || []
+  const summary   = `${icon} ${ref} · ${shortWho(names)}${route ? ': ' + route : ''}`
+
+  const departTZ = leg.depart_tz || 'UTC'
+  const arriveTZ = leg.arrive_tz || leg.depart_tz || 'UTC'
+
+  const depVal = isoLocalToValue(leg.depart_at)
+  const arrVal = isoLocalToValue(leg.arrive_at)
+
+  if (!depVal) return []
+
+  const uid = leg._source === 'legacy'
+    ? `leg-${leg._legacyDocId}-${leg._legacyIdx}`
+    : `leg-${leg._docId}`
+
+  const descParts = [
+    names.length ? `Traveler${names.length > 1 ? 's' : ''}: ${names.join(', ')}` : null,
+    leg.number    ? `${label} number: ${leg.number}` : null,
+    leg.from      ? `From: ${leg.from}` : null,
+    leg.to        ? `To: ${leg.to}` : null,
+    leg.depart_at ? `Departs: ${formatDTReadable(leg.depart_at, departTZ)}` : null,
+    leg.arrive_at ? `Arrives: ${formatDTReadable(leg.arrive_at, arriveTZ)}` : null,
+    leg.notes     ? `Notes: ${leg.notes}` : null,
+  ].filter(Boolean)
+
+  return [
+    'BEGIN:VEVENT',
+    `UID:${uid}`,
+    `DTSTAMP:${nowUTC()}`,
+    `SUMMARY:${escapeICS(summary)}`,
+    `DTSTART;TZID=${departTZ}:${depVal}`,
+    arrVal ? `DTEND;TZID=${arriveTZ}:${arrVal}` : `DTEND;TZID=${departTZ}:${depVal}`,
+    leg.from ? `LOCATION:${escapeICS(leg.from)}` : null,
+    `DESCRIPTION:${escapeICS(descParts.join('\n'))}`,
+    'END:VEVENT',
+  ].filter(Boolean)
+}
+
+function pickAccomDates(accom, relatedLegs) {
+  if (accom.check_in) {
+    return { checkIn: accom.check_in, checkOut: accom.check_out || null }
+  }
+  if (!relatedLegs.length) return { checkIn: null, checkOut: null }
+  const arrDates = relatedLegs.map(l => isoLocalToDate(l.arrive_at)).filter(Boolean).sort()
+  const depDates = relatedLegs.map(l => isoLocalToDate(l.depart_at)).filter(Boolean).sort()
+  return {
+    checkIn: arrDates[0] || null,
+    checkOut: depDates[depDates.length - 1] || null,
+  }
+}
+
+function relatedLegsFor(accom, allLegs) {
+  const ids = new Set(accom.traveler_ids || [])
+  if (!ids.size) return []
+  return allLegs.filter(l => (l.traveler_ids || []).some(id => ids.has(id)))
+}
+
+// `accom` is normalized: { name, address, check_in, check_out, notes,
+// traveler_ids, traveler_names, _source, _docId | _legacyDocId }
+function accommodationLines(accom, allLegs) {
+  if (!accom.name && !accom.address) return []
+  const accomName    = accom.name || 'Accommodation'
+  const accomAddress = accom.address || ''
+  const names        = accom.traveler_names || []
+
+  const { checkIn, checkOut } = pickAccomDates(accom, relatedLegsFor(accom, allLegs))
+  if (!checkIn) return []
+
+  const startVal = toDateValue(checkIn)
+  const endVal   = (checkOut && checkOut !== checkIn) ? toDateValue(checkOut) : nextDay(startVal)
+
+  const uid = accom._source === 'legacy'
+    ? `accom-${accom._legacyDocId}`
+    : `accom-${accom._docId}`
+
+  const desc = [
+    names.length ? `Traveler${names.length > 1 ? 's' : ''}: ${names.join(', ')}` : null,
+    accomAddress ? `Address: ${accomAddress}` : null,
+    accom.notes  ? `Notes: ${accom.notes}` : null,
+  ].filter(Boolean).join('\n')
+
+  return [
+    'BEGIN:VEVENT',
+    `UID:${uid}`,
+    `DTSTAMP:${nowUTC()}`,
+    `SUMMARY:${escapeICS(`🏨 ${accomName} · ${shortWho(names)}`)}`,
+    `DTSTART;VALUE=DATE:${startVal}`,
+    `DTEND;VALUE=DATE:${endVal}`,
+    accomAddress ? `LOCATION:${escapeICS(accomAddress)}` : null,
+    `DESCRIPTION:${escapeICS(desc)}`,
+    'END:VEVENT',
+  ].filter(Boolean)
+}
+
+// Merge legacy travel_details + new trip_legs/trip_accommodations into one
+// normalized list each, the same shape the client uses.
+function buildNormalizedTravel(legacyDetails, sharedLegs, sharedAccoms, members) {
+  const memberById = Object.fromEntries(members.map(m => [m.id, m]))
+  const namesFor = (ids) => (ids || []).map(id => memberById[id]?.full_name).filter(Boolean)
+
+  const legs = []
+  for (const detail of legacyDetails) {
+    ;(detail.legs || []).forEach((leg, idx) => {
+      legs.push({
+        ...leg,
+        _source: 'legacy',
+        _legacyDocId: detail.id,
+        _legacyIdx: idx,
+        traveler_ids: [detail.user_id],
+        traveler_names: namesFor([detail.user_id]),
+      })
+    })
+  }
+  for (const leg of sharedLegs) {
+    legs.push({
+      ...leg,
+      _source: 'shared',
+      _docId: leg.id,
+      traveler_names: namesFor(leg.traveler_ids),
+    })
+  }
+
+  const accoms = []
+  for (const detail of legacyDetails) {
+    if (detail.accommodation || detail.accommodation_address) {
+      accoms.push({
+        name: detail.accommodation || '',
+        address: detail.accommodation_address || '',
+        check_in: '',
+        check_out: '',
+        notes: detail.notes || '',
+        _source: 'legacy',
+        _legacyDocId: detail.id,
+        traveler_ids: [detail.user_id],
+        traveler_names: namesFor([detail.user_id]),
+      })
+    }
+  }
+  for (const accom of sharedAccoms) {
+    accoms.push({
+      ...accom,
+      _source: 'shared',
+      _docId: accom.id,
+      traveler_ids: accom.traveler_ids || [],
+      traveler_names: namesFor(accom.traveler_ids),
+    })
+  }
+
+  return { legs, accoms }
+}
+
+// ─── ICS builders ─────────────────────────────────────────────────────────────
+
+function buildItineraryICS(trip, events) {
+  const lines = icsHeader(trip.name, trip.timezone || null)
+  tripBannerLines(trip).forEach(l => lines.push(l))
+  const tz = trip.timezone || 'UTC'
+  for (const event of events) {
+    eventLines(event, tz).forEach(l => lines.push(l))
+  }
+  lines.push('END:VCALENDAR')
+  return injectVTimezones(lines).join('\r\n')
+}
+
+function buildTravelICS(trip, normalizedLegs, normalizedAccoms) {
+  const lines = icsHeader(`${trip.name} – Travel`, trip.timezone || null)
+  tripBannerLines(trip).forEach(l => lines.push(l))
+  for (const leg of normalizedLegs) {
+    legLines(leg).forEach(l => lines.push(l))
+  }
+  for (const accom of normalizedAccoms) {
+    accommodationLines(accom, normalizedLegs).forEach(l => lines.push(l))
+  }
+  lines.push('END:VCALENDAR')
+  return injectVTimezones(lines).join('\r\n')
+}
+
+function buildCombinedICS(trip, events, normalizedLegs, normalizedAccoms) {
+  const lines = icsHeader(`${trip.name} – Full Trip`, trip.timezone || null)
+  tripBannerLines(trip).forEach(l => lines.push(l))
+  const tz = trip.timezone || 'UTC'
+  for (const event of events) {
+    eventLines(event, tz).forEach(l => lines.push(l))
+  }
+  for (const leg of normalizedLegs) {
+    legLines(leg).forEach(l => lines.push(l))
+  }
+  for (const accom of normalizedAccoms) {
+    accommodationLines(accom, normalizedLegs).forEach(l => lines.push(l))
+  }
+  lines.push('END:VCALENDAR')
+  return injectVTimezones(lines).join('\r\n')
+}
+
+// ─── Subscription filter helpers ──────────────────────────────────────────────
+// `filter` shape (all optional, defaults preserve existing behaviour):
+//   traveler_ids:             array | null    null = include all travelers
+//   include_transport_events: boolean         default true
+//   only_my_events:           boolean         default false
+// `ownerId` is the user_id of the token's creator — used for `only_my_events`.
+
+function filterTravelersOnLegs(legs, travelerIds) {
+  if (travelerIds == null) return legs
+  const set = new Set(travelerIds)
+  if (!set.size) return []
+  return legs.filter(l => (l.traveler_ids || []).some(id => set.has(id)))
+}
+
+function filterTravelersOnAccoms(accoms, travelerIds) {
+  if (travelerIds == null) return accoms
+  const set = new Set(travelerIds)
+  if (!set.size) return []
+  return accoms.filter(a => (a.traveler_ids || []).some(id => set.has(id)))
+}
+
+function filterEvents(events, filter, ownerId) {
+  return events.filter(e => {
+    if (filter.include_transport_events === false && e.type === 'transport') return false
+    if (filter.only_my_events && ownerId) {
+      const a = e.assigned_to
+      // assigned_to encodings: ['__all__'] = everyone, [] / null = unassigned, [...] = list
+      if (Array.isArray(a) && a[0] === '__all__') return true
+      if (typeof a === 'string') return a === ownerId
+      if (!a || (Array.isArray(a) && a.length === 0)) return false
+      return Array.isArray(a) && a.includes(ownerId)
+    }
+    return true
+  })
+}
+
+// ─── Observer scopes ──────────────────────────────────────────────────────────
+// Mirrors src/lib/observerScope.js — keep the two in step. An observer who
+// subscribes to a trip's calendar gets only what the travellers who added them
+// chose to share: the union of every trip_observers doc for them on this trip.
+// A doc with no `scope` means everything.
+
+function observerArea(area) {
+  return {
+    mode: ['all', 'none', 'people', 'items'].includes(area?.mode) ? area.mode : 'all',
+    ids: Array.isArray(area?.ids) ? area.ids : [],
+  }
+}
+
+function observerTravelMatch(area, key, travelerIds) {
+  if (area.mode === 'all') return true
+  if (area.mode === 'people') return (travelerIds || []).some(id => area.ids.includes(id))
+  if (area.mode === 'items') return area.ids.includes(key)
+  return false
+}
+
+function observerEventMatch(area, event) {
+  if (area.mode === 'all') return true
+  if (area.mode === 'people') {
+    const raw = event.assigned_to
+    const people = typeof raw === 'string' ? [raw] : (Array.isArray(raw) ? raw : [])
+    if (people[0] === '__all__') return area.ids.length > 0
+    return people.some(id => area.ids.includes(id))
+  }
+  if (area.mode === 'items') return area.ids.includes(event.id)
+  return false
+}
+
+const legScopeKey = l => l._source === 'legacy'
+  ? `legacy-leg:${l._legacyDocId}:${l._legacyIdx}` : `leg:${l._docId}`
+const stayScopeKey = a => a._source === 'legacy'
+  ? `legacy-stay:${a._legacyDocId}` : `stay:${a._docId}`
+
+// null when `uid` travels on the trip (or isn't an observer) — no narrowing.
+async function observerScopesFor(tripId, uid) {
+  if (!uid || await isTripMember(tripId, uid)) return null
+  const snap = await db.collection('trip_observers')
+    .where('trip_id', '==', tripId).where('user_id', '==', uid).get()
+  if (snap.empty) return null
+  return snap.docs.map(d => {
+    const scope = d.data().scope || {}
+    return { travel: observerArea(scope.travel), events: observerArea(scope.events) }
+  })
+}
+
+function scopeLegs(legs, scopes) {
+  if (!scopes) return legs
+  return legs.filter(l => scopes.some(s => observerTravelMatch(s.travel, legScopeKey(l), l.traveler_ids)))
+}
+
+function scopeAccoms(accoms, scopes) {
+  if (!scopes) return accoms
+  return accoms.filter(a => scopes.some(s => observerTravelMatch(s.travel, stayScopeKey(a), a.traveler_ids)))
+}
+
+function scopeEvents(events, scopes) {
+  if (!scopes) return events
+  return events.filter(e => scopes.some(s => observerEventMatch(s.events, e)))
+}
+
+// ─── Cloud Function ───────────────────────────────────────────────────────────
+
+const db = getFirestore()
+
+exports.calendarFeed = functions.https.onRequest(async (req, res) => {
+  res.set('Access-Control-Allow-Origin', '*')
+  if (req.method === 'OPTIONS') {
+    res.set('Access-Control-Allow-Methods', 'GET')
+    res.set('Access-Control-Max-Age', '3600')
+    return res.status(204).send('')
+  }
+
+  const { token, type = 'itinerary' } = req.query
+  if (!token) return res.status(400).send('Missing token')
+
+  const tokenSnap = await db.collection('calendar_tokens').doc(token).get()
+  if (!tokenSnap.exists) return res.status(403).send('Invalid or expired token')
+
+  const tokenData = tokenSnap.data()
+  const { trip_id, created_by: ownerId } = tokenData
+  const filter = tokenData.filter || {}
+
+  const tripSnap = await db.collection('trips').doc(trip_id).get()
+  if (!tripSnap.exists) return res.status(404).send('Trip not found')
+  const trip = { id: tripSnap.id, ...tripSnap.data() }
+  const scopes = await observerScopesFor(trip_id, ownerId)
+
+  let icsContent
+
+  if (type === 'travel' || type === 'combined') {
+    const [detailsSnap, legsSnap, accomsSnap, membersSnap] = await Promise.all([
+      db.collection('travel_details').where('trip_id', '==', trip_id).get(),
+      db.collection('trip_legs').where('trip_id', '==', trip_id).get(),
+      db.collection('trip_accommodations').where('trip_id', '==', trip_id).get(),
+      db.collection('trip_members').where('trip_id', '==', trip_id).get(),
+    ])
+    const travelDetails = detailsSnap.docs.map(d => ({ id: d.id, ...d.data() }))
+    const sharedLegs    = legsSnap.docs.map(d => ({ id: d.id, ...d.data() }))
+    const sharedAccoms  = accomsSnap.docs.map(d => ({ id: d.id, ...d.data() }))
+    const profileIds    = membersSnap.docs.map(d => d.data().user_id)
+    const profiles      = await Promise.all(profileIds.map(uid => db.collection('profiles').doc(uid).get()))
+    const members       = profiles.filter(s => s.exists).map(s => ({ id: s.id, ...s.data() }))
+
+    let { legs, accoms } = buildNormalizedTravel(travelDetails, sharedLegs, sharedAccoms, members)
+    legs   = filterTravelersOnLegs(scopeLegs(legs, scopes), filter.traveler_ids)
+    accoms = filterTravelersOnAccoms(scopeAccoms(accoms, scopes), filter.traveler_ids)
+
+    if (type === 'combined') {
+      const eventsSnap = await db.collection('itinerary_events')
+        .where('trip_id', '==', trip_id).orderBy('time', 'asc').get()
+      const allEvents = eventsSnap.docs.map(d => ({ id: d.id, ...d.data() }))
+      const events = filterEvents(scopeEvents(allEvents, scopes), filter, ownerId)
+      icsContent = buildCombinedICS(trip, events, legs, accoms)
+    } else {
+      icsContent = buildTravelICS(trip, legs, accoms)
+    }
+  } else {
+    const eventsSnap = await db.collection('itinerary_events')
+      .where('trip_id', '==', trip_id).orderBy('time', 'asc').get()
+    const allEvents = eventsSnap.docs.map(d => ({ id: d.id, ...d.data() }))
+    const events = filterEvents(scopeEvents(allEvents, scopes), filter, ownerId)
+    icsContent = buildItineraryICS(trip, events)
+  }
+
+  const filename = `${trip.name.replace(/\s+/g, '-').replace(/[^a-zA-Z0-9\-_]/g, '').toLowerCase()}-${type}.ics`
+
+  res.set('Content-Type', 'text/calendar; charset=utf-8')
+  res.set('Content-Disposition', `attachment; filename="${filename}"`)
+  res.set('Cache-Control', 'public, max-age=3600')
+  res.send(icsContent)
+})
+
+// ─── Flight tracking proxy (Flightradar24) ───────────────────────────────────
+// Keeps the FR24 API token server-side — it must never ship in the client
+// bundle. Set it before deploying, e.g. add to functions/.env:
+//     FR24_API_KEY=your_token_here
+// (or `firebase functions:secrets:set FR24_API_KEY`). Returns a normalized,
+// slimmed-down position for a given flight number so the client just plots it.
+
+// Short-lived in-memory cache, keyed by flight number. Positions barely change
+// second-to-second, and this collapses bursts (React re-renders, multiple
+// travelers/tabs watching the same flight) into a single upstream call — the
+// main defense against FR24's per-minute rate limit. Best-effort: it lives only
+// on a warm instance, but that's exactly where bursts land.
+const FR24_CACHE = new Map() // flight -> { ts, payload }
+const FR24_TTL_MS = 30_000
+
+function normalizeFR24(ac) {
+  if (!ac) return null
+  return {
+    flight:    ac.flight || ac.callsign || null,
+    callsign:  ac.callsign || null,
+    lat:       typeof ac.lat === 'number' ? ac.lat : null,
+    lon:       typeof ac.lon === 'number' ? ac.lon : null,
+    track:     ac.track ?? null,        // heading in degrees, for marker rotation
+    alt:       ac.alt ?? null,          // feet
+    gspeed:    ac.gspeed ?? null,       // knots
+    vspeed:    ac.vspeed ?? null,
+    orig_iata: ac.orig_iata || null,
+    dest_iata: ac.dest_iata || null,
+    type:      ac.type || null,         // aircraft type e.g. B738
+    reg:       ac.reg || null,
+    eta:       ac.eta || null,
+    timestamp: ac.timestamp || null,
+    source:    ac.source || null,
+  }
+}
+
+exports.trackFlight = functions.https.onRequest(async (req, res) => {
+  res.set('Access-Control-Allow-Origin', '*')
+  if (req.method === 'OPTIONS') {
+    res.set('Access-Control-Allow-Methods', 'GET')
+    res.set('Access-Control-Allow-Headers', 'Content-Type')
+    res.set('Access-Control-Max-Age', '3600')
+    return res.status(204).send('')
+  }
+
+  const token = (process.env.FR24_API_KEY || '').trim()
+  if (!token) {
+    // Distinct code so the UI can show a "not configured" state rather than an error.
+    return res.status(503).json({ error: 'not_configured' })
+  }
+
+  const raw = (req.query.flight || '').toString().toUpperCase().replace(/\s+/g, '')
+  if (!raw) return res.status(400).json({ error: 'missing_flight' })
+
+  // Serve a fresh cached result if we have one — no upstream call, no credit spend.
+  const cached = FR24_CACHE.get(raw)
+  if (cached && Date.now() - cached.ts < FR24_TTL_MS) {
+    res.set('Cache-Control', 'no-store')
+    return res.status(200).json({ ...cached.payload, cached: true })
+  }
+
+  const url = `https://fr24api.flightradar24.com/api/live/flight-positions/full`
+            + `?flights=${encodeURIComponent(raw)}`
+
+  try {
+    const r = await fetch(url, {
+      headers: {
+        'Accept':         'application/json',
+        'Accept-Version': 'v1',
+        'Authorization':  `Bearer ${token}`,
+      },
+    })
+
+    if (!r.ok) {
+      const body = await r.text().catch(() => '')
+      console.error('FR24 error', r.status, body.slice(0, 500))
+      // On a rate-limit, serve stale cache if we have any — better than an error.
+      if (r.status === 429 && cached) {
+        res.set('Cache-Control', 'no-store')
+        return res.status(200).json({ ...cached.payload, cached: true, stale: true })
+      }
+      // Surface the real cause so it's visible in the browser Network tab.
+      // 401/403 → key or plan problem; 402 → out of credits; 429 → rate limited.
+      return res.status(502).json({
+        error: 'upstream',
+        status: r.status,
+        detail: body.slice(0, 300),
+      })
+    }
+
+    const json = await r.json()
+    const list = Array.isArray(json?.data) ? json.data : []
+    // A flight number can occasionally match more than one hull (code-shares,
+    // repositioning). Prefer an airborne ADS-B contact; fall back to the first.
+    const best = list.find(a => a.source === 'ADSB' && typeof a.lat === 'number') || list[0]
+    const position = normalizeFR24(best)
+
+    const payload = {
+      flight:   raw,
+      airborne: !!(position && position.lat != null && position.lon != null),
+      position: position || null,
+      count:    list.length,
+    }
+    FR24_CACHE.set(raw, { ts: Date.now(), payload })
+
+    res.set('Cache-Control', 'no-store')
+    return res.status(200).json(payload)
+  } catch (err) {
+    console.error('trackFlight failed', err)
+    return res.status(500).json({ error: 'internal' })
+  }
+})
+
+// ─── Next shared trip (for Our Den) ──────────────────────────────────────────
+// Our Den is a separate app/project and can't read Wander's database directly,
+// so it asks here: given two members' emails, what's their soonest upcoming
+// shared trip? Returns a slim { trip } for inline display; Our Den falls back to
+// a deep link when this is null. Read-only and unauthenticated — it reveals only
+// a trip's name and dates to someone who already knows both members' emails.
+//   Deep link (already handled by the app): /trips/upcoming?members=a,b
+//   This endpoint:                          /nextSharedTrip?members=a,b
+
+const WANDER_APP_URL = process.env.WANDER_APP_URL || 'https://wander.flyingdoublemranch.com'
+
+// Emails may be stored as typed at signup, so match a couple of casings.
+async function profileUidForEmail(email) {
+  const variants = [...new Set([email.trim(), email.trim().toLowerCase()])].filter(Boolean)
+  for (const v of variants) {
+    const snap = await db.collection('profiles').where('email', '==', v).limit(1).get()
+    if (!snap.empty) return snap.docs[0].id
+  }
+  return null
+}
+
+exports.nextSharedTrip = functions.https.onRequest(async (req, res) => {
+  res.set('Access-Control-Allow-Origin', '*')
+  if (req.method === 'OPTIONS') {
+    res.set('Access-Control-Allow-Methods', 'GET')
+    res.set('Access-Control-Allow-Headers', 'Content-Type')
+    res.set('Access-Control-Max-Age', '3600')
+    return res.status(204).send('')
+  }
+
+  try {
+    const emails = String(req.query.members || '')
+      .split(',')
+      .map(e => e.trim())
+      .filter(Boolean)
+    if (emails.length < 2) return res.json({ trip: null })
+
+    // 1) emails → uids. Bail if either isn't a Wander user.
+    const uids = []
+    for (const email of emails) {
+      const uid = await profileUidForEmail(email)
+      if (!uid) return res.json({ trip: null })
+      uids.push(uid)
+    }
+
+    // 2) uids → their trip_id sets, then intersect to shared trips.
+    const tripSets = await Promise.all(
+      uids.map(async uid => {
+        const snap = await db.collection('trip_members').where('user_id', '==', uid).get()
+        return new Set(snap.docs.map(d => d.data().trip_id))
+      }),
+    )
+    const sharedTripIds = [...tripSets[0]].filter(id => tripSets.every(set => set.has(id)))
+    if (!sharedTripIds.length) return res.json({ trip: null })
+
+    // 3) Load shared trips, keep upcoming AND in-progress ones (dates are
+    //    'YYYY-MM-DD', so a trip is still relevant while end_date >= today),
+    //    pick the soonest by start_date — an in-progress trip's start_date is
+    //    always earlier than any future trip's, so this naturally prefers it.
+    const today = new Date().toISOString().slice(0, 10)
+    const trips = await Promise.all(sharedTripIds.map(id => db.collection('trips').doc(id).get()))
+    const upcoming = trips
+      .filter(doc => doc.exists && doc.data().start_date && doc.data().end_date && doc.data().end_date >= today)
+      .map(doc => ({ id: doc.id, ...doc.data() }))
+      .sort((a, b) => a.start_date.localeCompare(b.start_date))
+
+    const soonest = upcoming[0]
+    const trip = soonest
+      ? {
+          id:         soonest.id,
+          name:       soonest.name,
+          start_date: soonest.start_date,
+          end_date:   soonest.end_date ?? null,
+          is_current: soonest.start_date <= today && today <= soonest.end_date,
+          url:        `${WANDER_APP_URL}/trips/${soonest.id}`,
+        }
+      : null
+
+    res.set('Cache-Control', 'private, max-age=300')
+    return res.json({ trip })
+  } catch (err) {
+    console.error('nextSharedTrip failed', err)
+    return res.status(500).json({ error: 'internal' })
+  }
+})
+
+// ─── Connected apps: read-only trip access for another app ───────────────────
+//
+// `nextSharedTrip` above already established that another app may read from
+// Wander — but it is deliberately unauthenticated and deliberately thin: it
+// hands over a trip's name and dates to anyone who knows two members' emails,
+// which is fine for "are these two away together" and nowhere near fine for an
+// itinerary. Flight numbers, times and who is on board are not something to
+// give up on a guessable URL.
+//
+// So these two endpoints take a token the owner mints for a named app in
+// Account → Connected apps, and can revoke there. The pattern is
+// `calendar_tokens`, with one important difference: a calendar token *is* a
+// trip — its doc names the one trip it feeds, so possession is the whole
+// check. An app token spans every trip its owner is on, so possession only
+// establishes *who* is asking, and membership has to be checked per request.
+// `assertTripMembership` below is that check, and it is the reason a stolen
+// token still cannot read a trip its owner was never on.
+
+const APP_TOKEN_COLLECTION = 'app_tokens'
+
+function corsPreflight(req, res) {
+  res.set('Access-Control-Allow-Origin', '*')
+  if (req.method !== 'OPTIONS') return false
+  res.set('Access-Control-Allow-Methods', 'GET')
+  res.set('Access-Control-Allow-Headers', 'Content-Type')
+  res.set('Access-Control-Max-Age', '3600')
+  res.status(204).send('')
+  return true
+}
+
+// The Wander account with this email, or null.
+async function uidForEmail(email) {
+  return profileUidForEmail(email)
+}
+
+// Resolves a token to its owner, or sends the error and returns null.
+// Accepts `Authorization: Bearer …` as well as `?token=`: a query string ends
+// up in server logs and browser history, and a server-to-server caller has no
+// reason to use one.
+//
+// Hive (the home-screen app, Fridge-Board repo) sends `Authorization: Hive
+// <pass>` instead: a two-minute pass for whoever is signed in to it, made for
+// Wander only (./hivePass.js). Its confirmed email finds their Wander account,
+// so no token is stored anywhere. Anything wrong is the same 403 as a bad token.
+async function ownerForAppToken(req, res) {
+  const header = String(req.get('authorization') || '')
+  const hive = header.match(/^Hive\s+(\S+)$/i)
+  if (hive) {
+    const claims = verifyHivePass(hive[1])
+    // Hive and Wander share one account (Supabase), so the pass's subject is the person.
+    const uid = claims && claims.email_verified ? claims.sub : null
+    if (!uid) {
+      res.status(403).json({ error: 'invalid_token' })
+      return null
+    }
+    return { token: null, uid }
+  }
+  const bearer = header.startsWith('Bearer ') ? header.slice(7).trim() : ''
+  const token = bearer || String(req.query.token || '')
+  if (!token) {
+    res.status(400).json({ error: 'missing_token' })
+    return null
+  }
+
+  const snap = await db.collection(APP_TOKEN_COLLECTION).doc(token).get()
+  // A doc with no `created_by` is treated exactly as one that is not there. It
+  // should be unreachable — the rules require the field on create — but the
+  // alternative to checking is passing `undefined` into a `where` clause,
+  // which throws: a malformed token doc would 500 rather than be denied.
+  if (!snap.exists || !snap.data().created_by) {
+    // Deliberately the same answer as a token that never existed: telling a
+    // caller which of the two it is confirms tokens for them.
+    res.status(403).json({ error: 'invalid_token' })
+    return null
+  }
+
+  // Best effort, and not awaited — "last used" is for the human reading the
+  // revoke list, and a failed write there must not fail the read.
+  snap.ref.update({ last_used_at: FieldValue.serverTimestamp() }).catch(() => {})
+
+  return { token, uid: snap.data().created_by }
+}
+
+/** True when `uid` is on `tripId`. The check possession alone cannot make. */
+async function isTripMember(tripId, uid) {
+  const snap = await db
+    .collection('trip_members')
+    .where('trip_id', '==', tripId)
+    .where('user_id', '==', uid)
+    .limit(1)
+    .get()
+  return !snap.empty
+}
+
+// GET /appTrips           → { trips: [ … ] }, newest departure first.
+// The picker on the other side of the integration: enough to choose a trip by,
+// and nothing that would be a leak on its own.
+exports.appTrips = functions.https.onRequest(async (req, res) => {
+  if (corsPreflight(req, res)) return
+
+  try {
+    const owner = await ownerForAppToken(req, res)
+    if (!owner) return
+
+    const memberSnap = await db.collection('trip_members').where('user_id', '==', owner.uid).get()
+    const tripIds = [...new Set(memberSnap.docs.map(d => d.data().trip_id))]
+    if (!tripIds.length) return res.json({ trips: [] })
+
+    const today = new Date().toISOString().slice(0, 10)
+    const docs = await Promise.all(tripIds.map(id => db.collection('trips').doc(id).get()))
+
+    const trips = docs
+      .filter(doc => doc.exists)
+      .map(doc => ({ id: doc.id, ...doc.data() }))
+      // Dates are 'YYYY-MM-DD' strings, so they compare lexically.
+      .filter(trip => trip.end_date && trip.end_date >= today)
+      .sort((a, b) => String(a.start_date).localeCompare(String(b.start_date)))
+      .map(trip => ({
+        id: trip.id,
+        name: trip.name || '',
+        destination: trip.destination || null,
+        start_date: trip.start_date || null,
+        end_date: trip.end_date || null,
+        is_current: trip.start_date <= today && today <= trip.end_date,
+        // The destination's coordinates, as the trip stores them for weather.
+        // A consumer uses them to tell a trip across town from one across the
+        // country; they add nothing the destination name doesn't already say.
+        lat: Number.isFinite(trip.lat) ? trip.lat : null,
+        lon: Number.isFinite(trip.lon) ? trip.lon : null,
+      }))
+
+    res.set('Cache-Control', 'private, max-age=60')
+    return res.json({ trips })
+  } catch (err) {
+    console.error('appTrips failed', err)
+    return res.status(500).json({ error: 'internal' })
+  }
+})
+
+// GET /appTripTravel?trip=ID → { trip, legs, accommodations }
+//
+// The legs come back as stored: a wall clock plus the IANA zone it is read in,
+// never an instant. That is what Wander holds, and converting here would be
+// this function guessing at an offset the record does not carry — see
+// `formatDTReadable`'s caveat. A consumer that wants an instant has the zone
+// to do it with.
+exports.appTripTravel = functions.https.onRequest(async (req, res) => {
+  if (corsPreflight(req, res)) return
+
+  try {
+    const owner = await ownerForAppToken(req, res)
+    if (!owner) return
+
+    const tripId = String(req.query.trip || '')
+    if (!tripId) return res.status(400).json({ error: 'missing_trip' })
+
+    // Membership before existence: answering "not found" for a trip that does
+    // exist but is somebody else's, and "forbidden" for one that does not,
+    // would let a caller map out trip ids by the difference.
+    if (!(await isTripMember(tripId, owner.uid))) {
+      return res.status(404).json({ error: 'not_found' })
+    }
+
+    const tripSnap = await db.collection('trips').doc(tripId).get()
+    if (!tripSnap.exists) return res.status(404).json({ error: 'not_found' })
+    const trip = { id: tripSnap.id, ...tripSnap.data() }
+
+    const [detailsSnap, legsSnap, accomsSnap, membersSnap] = await Promise.all([
+      db.collection('travel_details').where('trip_id', '==', tripId).get(),
+      db.collection('trip_legs').where('trip_id', '==', tripId).get(),
+      db.collection('trip_accommodations').where('trip_id', '==', tripId).get(),
+      db.collection('trip_members').where('trip_id', '==', tripId).get(),
+    ])
+
+    const profileIds = membersSnap.docs.map(d => d.data().user_id)
+    const profiles = await Promise.all(profileIds.map(uid => db.collection('profiles').doc(uid).get()))
+    const members = profiles.filter(s => s.exists).map(s => ({ id: s.id, ...s.data() }))
+
+    // Shared with the ICS builder on purpose: `travel_details.legs[]` is a
+    // shape still live in this database alongside `trip_legs`, and a second
+    // consumer reading only the newer one would silently lose older trips.
+    const { legs, accoms } = buildNormalizedTravel(
+      detailsSnap.docs.map(d => ({ id: d.id, ...d.data() })),
+      legsSnap.docs.map(d => ({ id: d.id, ...d.data() })),
+      accomsSnap.docs.map(d => ({ id: d.id, ...d.data() })),
+      members,
+    )
+
+    res.set('Cache-Control', 'private, max-age=60')
+    return res.json({
+      trip: {
+        id: trip.id,
+        name: trip.name || '',
+        destination: trip.destination || null,
+        start_date: trip.start_date || null,
+        end_date: trip.end_date || null,
+        timezone: trip.timezone || null,
+      },
+      legs: legs
+        .map(leg => ({
+          transport: leg.transport || 'other',
+          number: leg.number || null,
+          from: leg.from || '',
+          to: leg.to || '',
+          depart_at: leg.depart_at || null,
+          depart_tz: leg.depart_tz || null,
+          arrive_at: leg.arrive_at || null,
+          arrive_tz: leg.arrive_tz || null,
+          notes: leg.notes || null,
+          traveler_names: leg.traveler_names || [],
+          // Whether the token's owner is on this leg, so a connected app can
+          // show "my travel" without matching on display names.
+          mine: (leg.traveler_ids || []).includes(owner.uid),
+        }))
+        .filter(leg => leg.depart_at)
+        .sort((a, b) => String(a.depart_at).localeCompare(String(b.depart_at))),
+      accommodations: accoms.map(accom => ({
+        name: accom.name || '',
+        address: accom.address || null,
+        check_in: accom.check_in || null,
+        check_out: accom.check_out || null,
+        traveler_names: accom.traveler_names || [],
+        mine: (accom.traveler_ids || []).includes(owner.uid),
+      })),
+    })
+  } catch (err) {
+    console.error('appTripTravel failed', err)
+    return res.status(500).json({ error: 'internal' })
+  }
+})

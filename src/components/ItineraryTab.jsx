@@ -2,7 +2,7 @@ import { useState, useEffect, useReducer } from 'react'
 import {
   collection, query, where, getDocs,
   addDoc, updateDoc, deleteDoc, doc, serverTimestamp
-} from 'firebase/firestore'
+} from '../lib/store'
 import { db } from '../lib/firebase'
 import { logActivity, fieldDiff, fieldSummaryLines } from '../lib/activity'
 import { fetchWeatherForTrip } from '../lib/weather'

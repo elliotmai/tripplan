@@ -2,7 +2,7 @@ import {
   doc, setDoc, deleteDoc,
   collection, query, where, getDocs,
   serverTimestamp,
-} from 'firebase/firestore'
+} from './store'
 import { db } from './firebase'
 
 // ─── Token shape in Firestore ─────────────────────────────────────────────────
@@ -18,7 +18,8 @@ import { db } from './firebase'
 // so the Cloud Function checks membership per request. See `appTrips` in
 // functions/index.js.
 
-const FUNCTION_BASE = import.meta.env.VITE_FUNCTIONS_BASE_URL || ''
+// Wander's own server functions (netlify/functions/api.mjs), on this site.
+const FUNCTION_BASE = typeof window === 'undefined' ? '' : `${window.location.origin}/api`
 
 function randomToken() {
   // 32 hex chars, same as a feed token — unguessable and URL-safe.

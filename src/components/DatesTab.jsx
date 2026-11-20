@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState, useRef, useReducer } from 'react'
 import {
   collection, query, where, getDocs, addDoc, deleteDoc, updateDoc,
   doc, serverTimestamp,
-} from 'firebase/firestore'
+} from '../lib/store'
 import { db } from '../lib/firebase'
 import {
   format, parseISO, addDays, startOfMonth, endOfMonth,

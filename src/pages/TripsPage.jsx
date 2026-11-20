@@ -1,6 +1,6 @@
 import { useState, useEffect, useReducer } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { collection, query, where, getDocs, doc, getDoc } from 'firebase/firestore'
+import { collection, query, where, getDocs, doc, getDoc } from '../lib/store'
 import { db } from '../lib/firebase'
 import { useAuth } from '../contexts/useAuth'
 import { format, parseISO, differenceInDays } from 'date-fns'

@@ -2,7 +2,7 @@ import { useState } from 'react'
 import { useAuth } from '../contexts/useAuth'
 
 export default function AuthPage() {
-  const { signIn, signUp } = useAuth()
+  const { signIn, signUp, signInWithGoogle } = useAuth()
   const [mode, setMode] = useState('signin')
   const [name, setName] = useState('')
   const [email, setEmail] = useState('')
@@ -21,8 +21,7 @@ export default function AuthPage() {
         await signUp(email, password, name)
       }
     } catch (err) {
-      // Firebase error messages are readable enough
-      setError(err.message.replace('Firebase: ', '').replace(/ \(auth\/.*\)\.?/, ''))
+      setError(err.message)
     } finally {
       setLoading(false)
     }
@@ -82,6 +81,13 @@ export default function AuthPage() {
             {loading ? 'Loading…' : mode === 'signin' ? 'Sign In' : 'Create Account'}
           </button>
         </form>
+
+        <button type="button" onClick={() => signInWithGoogle().catch(err => setError(err.message))}
+          className="w-full py-3 rounded-xl text-sm font-medium tracking-wider mt-3 transition-all active:scale-95"
+          style={{background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(212,184,122,0.25)', color: '#d4cfc8'}}>
+          Continue with Google
+        </button>
+        <p className="mt-3 text-center text-xs" style={{color: '#5a5248'}}>One account for Wander, Hive and the rest of your apps.</p>
 
         <p className="mt-6 text-center text-sm" style={{color: '#5a5248'}}>
           {mode === 'signin' ? "Don't have an account? " : 'Already have an account? '}

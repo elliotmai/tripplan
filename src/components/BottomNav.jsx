@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { collection, query, where, onSnapshot } from 'firebase/firestore'
+import { collection, query, where, onSnapshot } from '../lib/store'
 import { Compass, User, Users, Plane } from 'lucide-react'
 import { db } from '../lib/firebase'
 import { useAuth } from '../contexts/useAuth'

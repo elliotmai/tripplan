@@ -1,4 +1,4 @@
-import { doc, updateDoc, deleteDoc } from 'firebase/firestore'
+import { doc, updateDoc, deleteDoc } from './store'
 import { db } from './firebase'
 
 // Keep a trip's travel in step with who is actually travelling.

@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react'
-import { collection, query, where, getDocs } from 'firebase/firestore'
+import { collection, query, where, getDocs } from '../lib/store'
 import { db } from '../lib/firebase'
 import { Check } from 'lucide-react'
 import { normalizeScope, legKey, stayKey } from '../lib/observerScope'

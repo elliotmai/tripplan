@@ -1,5 +1,5 @@
 import { useState, useEffect, useReducer } from 'react'
-import { collection, query, where, getDocs } from 'firebase/firestore'
+import { collection, query, where, getDocs } from '../lib/store'
 import { db } from '../lib/firebase'
 import { undoActivity } from '../lib/activity'
 import { formatDistanceToNow, format } from 'date-fns'

@@ -8,3 +8,12 @@
   from = "/*"
   to = "/index.html"
   status = 200
+
+[build.environment]
+  # Public by design, in the page: the old Firebase web key (used once, to
+  # bring trips over) and Supabase's publishable key.
+  SECRETS_SCAN_SMART_DETECTION_OMIT_VALUES = "AIzaSyC1KnocB9ogDmH27IQbjDQe-exvGa8wzsQ,sb_publishable_fZo1FUg_j4O1EHH-W2Jr1A_4P8W3o2S"
+
+# Wander's server functions (netlify/functions/api.mjs) need, functions scope:
+#   SUPABASE_SERVICE_ROLE_KEY   reads wander.docs for calendar feeds and apps
+#   FR24_API_KEY                optional, live flight positions

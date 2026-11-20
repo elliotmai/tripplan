@@ -1,7 +1,8 @@
 // Client side of flight tracking. The FR24 token lives in the Cloud Function
 // (see functions/index.js → trackFlight); here we just call our own proxy.
 
-const FUNCTION_BASE = import.meta.env.VITE_FUNCTIONS_BASE_URL || ''
+// Wander's own server functions (netlify/functions/api.mjs), on this site.
+const FUNCTION_BASE = typeof window === 'undefined' ? '' : `${window.location.origin}/api`
 
 // Only flights are trackable, and only if we know the flight number.
 export function isTrackable(leg) {

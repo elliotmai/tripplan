@@ -1,7 +1,7 @@
 import {
   collection, query, where, getDocs, getDoc, setDoc, updateDoc,
   deleteDoc, doc, serverTimestamp,
-} from 'firebase/firestore'
+} from './store'
 import { db } from './firebase'
 
 // Deterministic friendship doc id — sorted so A↔B and B↔A collide on the same doc.

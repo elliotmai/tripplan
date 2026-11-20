@@ -2,7 +2,7 @@ import { useState, useEffect, useReducer } from 'react'
 import {
   collection, query, where, getDocs, addDoc, updateDoc, deleteDoc, doc,
   serverTimestamp, arrayUnion, arrayRemove,
-} from 'firebase/firestore'
+} from '../lib/store'
 import { db } from '../lib/firebase'
 import { logActivity, fieldDiff, fieldSummaryLines } from '../lib/activity'
 import { format } from 'date-fns'

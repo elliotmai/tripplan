@@ -2,7 +2,7 @@ import {
   doc, setDoc, deleteDoc, updateDoc,
   collection, query, where, getDocs,
   serverTimestamp,
-} from 'firebase/firestore'
+} from './store'
 import { db } from './firebase'
 
 // Default filter when none is stored. `traveler_ids: null` means "all travelers".
@@ -15,7 +15,8 @@ export const DEFAULT_FEED_FILTER = {
 // The Cloud Function base URL — set this after deploying.
 // It will look like: https://REGION-PROJECT.cloudfunctions.net
 // Or if using Firebase Hosting rewrites: just ''  (same origin)
-const FUNCTION_BASE = import.meta.env.VITE_FUNCTIONS_BASE_URL || ''
+// Wander's own server functions (netlify/functions/api.mjs), on this site.
+const FUNCTION_BASE = typeof window === 'undefined' ? '' : `${window.location.origin}/api`
 
 // ─── Token shape in Firestore ─────────────────────────────────────────────────
 // calendar_tokens/{token}

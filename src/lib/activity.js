@@ -1,7 +1,7 @@
 import {
   collection, addDoc, doc, getDoc, setDoc, updateDoc, deleteDoc,
   serverTimestamp,
-} from 'firebase/firestore'
+} from './store'
 import { db } from './firebase'
 
 // ── Trip activity log ─────────────────────────────────────────────────────────

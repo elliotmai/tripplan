@@ -1,7 +1,7 @@
 import { useState, useEffect, useReducer } from 'react'
 import {
   collection, query, where, getDocs, addDoc, deleteDoc, updateDoc, doc, getDoc, serverTimestamp,
-} from 'firebase/firestore'
+} from '../lib/store'
 import { db } from '../lib/firebase'
 import { Eye, Plus, Check, Trash2, UserPlus, Sparkles, SlidersHorizontal } from 'lucide-react'
 import { FULL_SCOPE, scopeSummary } from '../lib/observerScope'

@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from 'react'
 import {
   collection, query, where, getDocs,
   addDoc, updateDoc, deleteDoc, doc, serverTimestamp,
-} from 'firebase/firestore'
+} from '../lib/store'
 import { pruneTravel } from '../lib/pruneTravel'
 import { db } from '../lib/firebase'
 import { downloadTravelICS } from '../lib/ical'

@@ -4,6 +4,14 @@
   command = "npm run build"
   publish = "dist"
 
+# The old address sends people to the new one, so the one Hive sign-in
+# (a cookie for *.flyingdoublemranch.com) covers this app too.
+[[redirects]]
+  from = "https://wander-tripplanner.netlify.app/*"
+  to = "https://wander.flyingdoublemranch.com/:splat"
+  status = 301
+  force = true
+
 [[redirects]]
   from = "/*"
   to = "/index.html"

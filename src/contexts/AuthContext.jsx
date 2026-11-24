@@ -6,7 +6,6 @@ import {
 } from '../lib/store'
 import { db } from '../lib/firebase'
 import { HIVE_ORIGIN, supabase } from '../lib/supabase'
-import { openOldAccount } from '../lib/importHistory'
 import { AuthContext } from './useAuth'
 
 /*
@@ -102,15 +101,11 @@ export function AuthProvider({ children }) {
 
   async function signIn(email, password) {
     email = email.trim()
-    // The same password opens the old Wander account too, so your trips can
-    // come over (see lib/importHistory.js). Nothing is kept.
-    const old = openOldAccount({ email, password })
     try {
       await passwordSignIn(email, password)
     } catch (e) {
       throw friendly(e)
     }
-    await old
   }
 
   async function signInWithGoogle() {

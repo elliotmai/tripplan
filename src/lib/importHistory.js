@@ -1,7 +1,9 @@
 /* ── Bringing your trips over ──────────────────────────────────────────────
-   Wander used to keep everything in Firebase (wander-f10b1). Once per person:
-   open the old account (with the password just typed at sign-in, or Google,
-   or the old password asked for), have Hive confirm it's yours, then copy the
+   Wander used to keep everything in Firebase (wander-f10b1). The database now
+   brings each old account over by itself once an account with the same email
+   exists. This is only for someone whose old account used another email,
+   started from Account (components/BringTripsOver.jsx): open the old account
+   (its email and password, or Google), have Hive confirm it, then copy the
    trips you were on — with everything in them and the profiles of the people
    on them — plus your friends and links. Everyone's old id becomes their new
    one as they arrive, so shared trips line up. Nothing is overwritten, so a
@@ -42,22 +44,6 @@ export async function openOldAccount(how) {
   } catch {
     return false
   }
-}
-
-export async function oldAccountOpen() {
-  const { auth } = await oldFirebase()
-  await auth.authStateReady()
-  return Boolean(auth.currentUser)
-}
-
-export async function alreadyImported() {
-  const { data } = await wander.from('imports').select('user_id').maybeSingle()
-  return Boolean(data)
-}
-
-export async function markImported() {
-  const { error } = await wander.from('imports').insert({ rows: 0 })
-  if (error && error.code !== '23505') throw error
 }
 
 const chunks = (list, n) => Array.from({ length: Math.ceil(list.length / n) }, (_, i) => list.slice(i * n, i * n + n))

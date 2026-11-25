@@ -16,6 +16,17 @@ function cmpVersion(a, b) {
   return 0;
 }
 
+// True when the app runs inside a frame — Hive shows every app in an iframe
+// and has its own What's New. Reading window.top can throw when the parent is
+// cross-origin; that is a frame too.
+function isEmbedded() {
+  try {
+    return window.self !== window.top
+  } catch {
+    return true
+  }
+}
+
 
 // Read the changelog once on first render and return every entry newer than what
 // this device last saw. First visit (no stored value) shows only the newest entry.
@@ -43,7 +54,21 @@ function unseenEntries() {
  */
 export default function WhatsNew() {
   const latest = WHATS_NEW[0]
-  const [entries, setEntries] = useState(unseenEntries)
+  const [unseen] = useState(unseenEntries)
+  // Inside Hive, never show it; Hive shows its own What's New.
+  const [entries, setEntries] = useState(() => (isEmbedded() ? [] : unseen))
+
+  // Record "seen" as soon as it is shown, not only on dismiss: Hive remounts
+  // the app on every open and people go home without tapping close, so a
+  // dismiss-only write let the same update pop up every time.
+  useEffect(() => {
+    if (!unseen.length || !latest) return
+    try {
+      localStorage.setItem(STORAGE_KEY, latest.version)
+    } catch {
+      /* ignore storage failures */
+    }
+  }, [unseen, latest])
   const { user } = useAuth()
   const newAccount = user?.intro_seen === false
 

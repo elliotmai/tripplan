@@ -57,7 +57,7 @@ export default function WelcomeTour() {
   return (
     <div className="fixed inset-0 z-[80] flex items-center justify-center px-6"
       style={{ background: 'rgba(0,0,0,0.8)', backdropFilter: 'blur(6px)' }}>
-      <div className="w-full max-w-sm rounded-3xl slide-up overflow-hidden"
+      <div className="w-full max-w-sm max-h-full rounded-3xl slide-up overflow-y-auto"
         role="dialog" aria-modal="true" aria-labelledby="welcome-title"
         style={{ background: '#1c1916', border: '1px solid rgba(212,184,122,0.15)' }}>
 

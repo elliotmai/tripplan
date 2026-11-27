@@ -287,7 +287,7 @@ function DeleteTripModal({ tripName, deleting, onCancel, onConfirm }) {
   return (
     <div className="fixed inset-0 z-[60] flex items-end justify-center"
       style={{ background: 'rgba(0,0,0,0.8)', backdropFilter: 'blur(6px)' }}>
-      <div className="w-full max-w-lg rounded-t-3xl p-6 pb-10 slide-up"
+      <div className="w-full max-w-lg max-h-full overflow-y-auto rounded-t-3xl p-6 pb-10 slide-up"
         style={{ background: '#1c1916', border: '1px solid rgba(196,124,90,0.25)' }}>
         <div className="flex items-start justify-between mb-5">
           <div className="flex items-center gap-3">

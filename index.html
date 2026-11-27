@@ -18,6 +18,14 @@
     <link rel="icon" type="image/svg+xml" href="/app-icon.svg" />
   
     <title>wander</title>
+    <script>
+      // Inside Hive's frame: no pinch or double-tap zoom (Hive can't stop a pinch that starts in here).
+      // Leaflet maps still pinch-zoom: they handle the gesture themselves.
+      if (window.parent !== window) {
+        document.documentElement.style.touchAction = 'pan-x pan-y';
+        document.addEventListener('gesturestart', function (e) { e.preventDefault(); }, { passive: false });
+      }
+    </script>
   </head>
   <body>
     <div id="root"></div>

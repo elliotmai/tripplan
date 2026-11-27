@@ -12,6 +12,13 @@
  */
 export const WHATS_NEW = [
   {
+    version: '2026.11.27',
+    date: 'November 2026',
+    items: [
+      '📱 Tidier on phones and tablets — tapping into a field no longer zooms in, the last item on a page is no longer hidden behind the tab bar, and the bug-report link stays out of the way of your trip.',
+    ],
+  },
+  {
     version: '2026.11.18',
     date: 'November 2026',
     items: [

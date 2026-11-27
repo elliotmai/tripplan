@@ -110,7 +110,7 @@ export default function FlightsPage() {
 
 
   return (
-    <div className="flex flex-col" style={{ background: '#0a0908', height: '100dvh' }}>
+    <div className="flex flex-col h-screen supports-[height:100dvh]:h-[100dvh]" style={{ background: '#0a0908' }}>
       <div className="px-6 pt-12 pb-4 flex-shrink-0"
         style={{ background: 'linear-gradient(180deg, #12100e 0%, transparent 100%)' }}>
         <p className="text-xs tracking-[0.2em] uppercase mb-1" style={{ color: '#5a5248' }}>Live</p>

@@ -95,5 +95,16 @@ img, svg, video, canvas { max-width: 100%; height: auto; }
 ::-webkit-scrollbar-track { background: #12100e; }
 ::-webkit-scrollbar-thumb { background: #3d3830; border-radius: 2px; }
 
-/* Tab bar safe area */
-.pb-safe { padding-bottom: calc(4rem + env(safe-area-inset-bottom, 0px)); }
+/* Tab bar safe area: clears the fixed bottom nav (about 5rem tall) */
+.pb-safe { padding-bottom: calc(5.5rem + env(safe-area-inset-bottom, 0px)); }
+
+/* Phones and tablets: form fields at 16px so iOS doesn't zoom in on focus. */
+@media (pointer: coarse) {
+  input, select, textarea { font-size: 16px !important; min-width: 0; }
+}
+
+/* Older Android browsers (before Chrome 87) don't know `inset`, which is all
+   Tailwind's inset-0 sets; spell it out so overlays and sheets still cover. */
+@layer utilities {
+  .inset-0 { top: 0; right: 0; bottom: 0; left: 0; }
+}

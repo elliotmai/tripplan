@@ -31,7 +31,8 @@ export default function BottomNav({ active }) {
         background: 'rgba(10,9,8,0.95)',
         backdropFilter: 'blur(20px)',
         borderTop: '1px solid rgba(212,184,122,0.08)',
-        paddingBottom: 'calc(1rem + env(safe-area-inset-bottom, 0px))',
+        // Room under the labels for the footer link that sits in this band.
+        paddingBottom: 'calc(1.5rem + env(safe-area-inset-bottom, 0px))',
       }}>
       <NavItem
         icon={<Compass size={20} />}

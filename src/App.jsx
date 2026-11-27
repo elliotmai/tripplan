@@ -1,4 +1,4 @@
-import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom'
+import { BrowserRouter, Routes, Route, Navigate, useLocation } from 'react-router-dom'
 import { AuthProvider } from './contexts/AuthContext'
 import { useAuth } from './contexts/useAuth'
 import AuthPage from './pages/AuthPage'
@@ -43,12 +43,19 @@ function AppRoutes() {
 
 // Understated, persistent footer link — shown on every screen. Pinned to the very
 // bottom edge (z-40, above the z-30 bottom nav but below modals) so it sits in the
-// nav's empty bottom band on tabbed pages and at the page bottom elsewhere. The
-// wrapper is click-through; only the link itself is interactive.
+// nav's empty bottom band on tabbed pages and in the sign-in page's bottom padding;
+// that wrapper is click-through, only the link is interactive. On the other signed-in
+// pages (a trip) there is no band to sit in and, pinned, it floated over the page as
+// you scrolled, so there it ends the page instead.
+const TAB_PATHS = ['/', '/flights', '/friends', '/account']
+
 function AppFooter() {
+  const { user } = useAuth()
+  const { pathname } = useLocation()
+  const inNavBand = !user || TAB_PATHS.includes(pathname)
   return (
-    <div className="fixed inset-x-0 bottom-0 z-40 flex justify-center pointer-events-none"
-      style={{ paddingBottom: '4px' }}>
+    <div className={inNavBand ? 'fixed inset-x-0 bottom-0 z-40 flex justify-center pointer-events-none' : 'flex justify-center'}
+      style={{ paddingBottom: '4px', background: inNavBand ? undefined : '#0a0908' }}>
       <a
         href="https://ticketbooth.netlify.app/"
         target="_blank"

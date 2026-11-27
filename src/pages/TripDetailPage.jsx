@@ -167,7 +167,7 @@ export default function TripDetailPage() {
     <div className="min-h-screen" style={{ background: '#0a0908' }}>
 
       {/* ── Hero header ── */}
-      <div className="relative px-6 pt-12 pb-6"
+      <div className="relative px-6 pt-header pb-6"
         style={{ background: 'linear-gradient(180deg, #1c1916 0%, #12100e 60%, transparent 100%)' }}>
 
         <button onClick={() => navigate('/')}

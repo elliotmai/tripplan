@@ -307,7 +307,7 @@ export default function AccountPage() {
   return (
     <div className="min-h-screen pb-safe" style={{ background: '#0a0908' }}>
       {/* Header */}
-      <div className="px-6 pt-12 pb-6"
+      <div className="px-6 pt-header pb-6"
         style={{ background: 'linear-gradient(180deg, #12100e 0%, transparent 100%)' }}>
         <p className="text-xs tracking-[0.2em] uppercase mb-1" style={{ color: '#5a5248' }}>Your</p>
         <h1 className="font-display text-4xl font-light" style={{ color: '#e8d5a3', fontStyle: 'italic' }}>

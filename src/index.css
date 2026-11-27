@@ -95,8 +95,14 @@ img, svg, video, canvas { max-width: 100%; height: auto; }
 ::-webkit-scrollbar-track { background: #12100e; }
 ::-webkit-scrollbar-thumb { background: #3d3830; border-radius: 2px; }
 
-/* Tab bar safe area: clears the fixed bottom nav (about 5rem tall) */
-.pb-safe { padding-bottom: calc(5.5rem + env(safe-area-inset-bottom, 0px)); }
+/* Tab bar safe area: clears the fixed bottom nav (about 4rem tall) */
+.pb-safe { padding-bottom: calc(4.5rem + env(safe-area-inset-bottom, 0px)); }
+
+/* Space above a page's header: the notch's room when installed on an iPhone,
+   then a little air. env() is 0 in a browser tab and inside Hive's frame
+   (which has its own bar above), so there it's just the air; a fixed 3rem
+   here used to leave an empty band at the top of every page. */
+.pt-header { padding-top: calc(env(safe-area-inset-top, 0px) + 1.25rem); }
 
 /* Phones and tablets: form fields at 16px so iOS doesn't zoom in on focus. */
 @media (pointer: coarse) {

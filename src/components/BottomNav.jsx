@@ -26,13 +26,14 @@ export default function BottomNav({ active }) {
   }, [user?.id])
 
   return (
-    <div className="fixed bottom-0 left-0 right-0 z-30 flex items-center justify-around px-8 py-4"
+    <div className="fixed bottom-0 left-0 right-0 z-30 flex items-center justify-around px-8 pt-2.5"
       style={{
         background: 'rgba(10,9,8,0.95)',
         backdropFilter: 'blur(20px)',
         borderTop: '1px solid rgba(212,184,122,0.08)',
-        // Room under the labels for the footer link that sits in this band.
-        paddingBottom: 'calc(1.5rem + env(safe-area-inset-bottom, 0px))',
+        // Room under the labels for the footer link that sits in this band
+        // (9px text and 4px under it), then the home indicator when installed.
+        paddingBottom: 'calc(1.3rem + env(safe-area-inset-bottom, 0px))',
       }}>
       <NavItem
         icon={<Compass size={20} />}

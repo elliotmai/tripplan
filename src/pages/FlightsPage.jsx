@@ -111,13 +111,13 @@ export default function FlightsPage() {
 
   return (
     <div className="flex flex-col h-screen supports-[height:100dvh]:h-[100dvh]" style={{ background: '#0a0908' }}>
-      <div className="px-6 pt-12 pb-4 flex-shrink-0"
+      <div className="px-6 pt-header pb-4 flex-shrink-0"
         style={{ background: 'linear-gradient(180deg, #12100e 0%, transparent 100%)' }}>
         <p className="text-xs tracking-[0.2em] uppercase mb-1" style={{ color: '#5a5248' }}>Live</p>
         <h1 className="font-display text-4xl font-light" style={{ color: '#e8d5a3', fontStyle: 'italic' }}>Flights</h1>
       </div>
 
-      <div className="flex-1 min-h-0" style={{ paddingBottom: 'calc(5.5rem + env(safe-area-inset-bottom, 0px))' }}>
+      <div className="flex-1 min-h-0" style={{ paddingBottom: 'calc(4.5rem + env(safe-area-inset-bottom, 0px))' }}>
         {loading ? (
           <div className="h-full flex items-center justify-center">
             <div className="text-4xl" style={{ animation: 'pulse 2s infinite' }}>📡</div>

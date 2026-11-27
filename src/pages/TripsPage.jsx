@@ -71,7 +71,7 @@ export default function TripsPage() {
 
   return (
     <div className="min-h-screen pb-safe" style={{ background: '#0a0908' }}>
-      <div className="px-6 pt-12 pb-6" style={{ background: 'linear-gradient(180deg, #12100e 0%, transparent 100%)' }}>
+      <div className="px-6 pt-header pb-6" style={{ background: 'linear-gradient(180deg, #12100e 0%, transparent 100%)' }}>
         <div className="flex items-end justify-between mb-1">
           <div>
             <p className="text-xs tracking-[0.2em] uppercase mb-1" style={{ color: '#5a5248' }}>

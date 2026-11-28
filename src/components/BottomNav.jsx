@@ -33,7 +33,7 @@ export default function BottomNav({ active }) {
         borderTop: '1px solid rgba(212,184,122,0.08)',
         // Room under the labels for the footer link that sits in this band
         // (9px text and 4px under it), then the home indicator when installed.
-        paddingBottom: 'calc(1.3rem + env(safe-area-inset-bottom, 0px))',
+        paddingBottom: 'calc(1.3rem + var(--safe-bottom))',
       }}>
       <NavItem
         icon={<Compass size={20} />}

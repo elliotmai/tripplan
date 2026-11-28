@@ -117,7 +117,7 @@ export default function FlightsPage() {
         <h1 className="font-display text-4xl font-light" style={{ color: '#e8d5a3', fontStyle: 'italic' }}>Flights</h1>
       </div>
 
-      <div className="flex-1 min-h-0" style={{ paddingBottom: 'calc(4.5rem + env(safe-area-inset-bottom, 0px))' }}>
+      <div className="flex-1 min-h-0" style={{ paddingBottom: 'calc(4.5rem + var(--safe-bottom))' }}>
         {loading ? (
           <div className="h-full flex items-center justify-center">
             <div className="text-4xl" style={{ animation: 'pulse 2s infinite' }}>📡</div>
